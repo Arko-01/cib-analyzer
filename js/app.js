@@ -309,6 +309,7 @@ function initProcessPage() {
                 try {
                     // Read file
                     const arrayBuffer = await file.arrayBuffer();
+                    if (cancelRequested) break;
 
                     // Size check
                     if (arrayBuffer.byteLength > MAX_PDF_SIZE_BYTES) {
@@ -317,6 +318,7 @@ function initProcessPage() {
 
                     // Compute hash
                     const fileHash = await computeFileHash(arrayBuffer);
+                    if (cancelRequested) break;
 
                     // Check if hash already exists
                     const existingCode = db.getSubjectByFileHash(fileHash);
@@ -326,6 +328,10 @@ function initProcessPage() {
                         await db.deleteSubject(existingCode);
                         replaced = true;
                     }
+
+                    // Yield to UI so cancel clicks can register
+                    await new Promise(r => setTimeout(r, 0));
+                    if (cancelRequested) break;
 
                     // Extract text
                     const text = await extractText(arrayBuffer);
@@ -386,6 +392,7 @@ function initProcessPage() {
                         statusEl.className = 'file-status text-danger';
                     }
 
+                    console.error(`FAIL: ${file.name}`, err);
                     processLog.innerHTML += `<div class="log-err">[${i + 1}/${total}] FAIL: ${escapeHtml(file.name)} — ${escapeHtml(err.message)} (${duration}s)</div>`;
 
                     try {
@@ -426,6 +433,7 @@ function initProcessPage() {
         cancelBtn.addEventListener('click', () => {
             cancelRequested = true;
             cancelBtn.disabled = true;
+            cancelBtn.textContent = 'Cancelling...';
         });
     }
 }
