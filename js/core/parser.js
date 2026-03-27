@@ -49,6 +49,7 @@ const RE_CIB_CODE = /^[A-Z]\d{9,}$/;
 const RE_CONTRACT_CODE = /[A-Z]\d{9,}/;
 
 // Matches monetary amounts with optional commas (e.g., "1,187,429" or "0")
+// Note: test against trimmed values — anchors require exact match
 const RE_AMOUNT = /^[\d,]+$/;
 
 // Matches the inquiry date format: "22-Jan-2026 10:28:07 AM"
@@ -86,9 +87,12 @@ function cleanAndSplit(text) {
     const lines = text.split("\n");
     const cleaned = [];
     for (let i = 0; i < lines.length; i++) {
-        const stripped = lines[i].trim();
+        // Normalize Unicode ligatures before any checks (pdf.js may emit fi/fl ligatures)
+        let stripped = lines[i].trim()
+            .replace(/\ufb01/g, 'fi')
+            .replace(/\ufb02/g, 'fl');
         // Skip confidential headers that appear at top and bottom of every page
-        if (stripped.startsWith("CONFIDENTIAL")) {
+        if (stripped.toUpperCase().startsWith("CONFIDENTIAL")) {
             continue;
         }
         // Skip page number footers like "1/8"
@@ -123,6 +127,28 @@ function getValueAfter(lines, index) {
         }
     }
     return '';
+}
+
+
+/**
+ * Strip trailing inline fields from a value.
+ * In real CIB PDFs, two-column layouts cause fields to merge on one line, e.g.:
+ *   "HASAN FARUK Sector type: PRIVATE"
+ * This strips everything from the first trailing field label onward.
+ *
+ * @param {string} val - The raw extracted value
+ * @param {string[]} fieldLabels - Labels to search for (e.g., ['Sector type', 'Sector code'])
+ * @returns {string} Cleaned value
+ */
+function stripTrailingField(val, fieldLabels) {
+    if (!val) return val;
+    for (const label of fieldLabels) {
+        const idx = val.indexOf(label);
+        if (idx > 0) {
+            return val.substring(0, idx).trim();
+        }
+    }
+    return val;
 }
 
 
@@ -162,8 +188,12 @@ function findSectionBoundaries(lines) {
         const line = lines[i];
         if (line.includes('Credit Information Report') && sections.inquiry === -1) {
             sections.inquiry = i;
-        } else if (line === 'INQUIRED' && sections.inquired === -1) {
+        } else if (line.startsWith('INQUIRED') && sections.inquired === -1) {
             sections.inquired = i;
+            // Handle merged line: "INQUIRED NID VERIFICATION RESULT"
+            if (line.includes('NID VERIFICATION RESULT') && sections.nid_verification === -1) {
+                sections.nid_verification = i;
+            }
         } else if (line.includes('NID VERIFICATION RESULT') && sections.nid_verification === -1) {
             sections.nid_verification = i;
         } else if (line.includes('SUBJECT INFORMATION') && sections.subject_info === -1) {
@@ -222,16 +252,41 @@ function parseInquiryHeader(lines, sections) {
     // Find the position of "Date of Inquiry"
     const labelNames = ['Date of Inquiry', 'User ID', 'FI Code', 'Branch Code', 'FI Name'];
     let labelStart = -1;
+    let singleLineHeader = false;
 
     for (let i = 0; i < headerLines.length; i++) {
         if (headerLines[i] === 'Date of Inquiry') {
             labelStart = i;
             break;
         }
+        // Handle single-line format: "Date of Inquiry User ID FI Code Branch Code FI Name"
+        if (headerLines[i].includes('Date of Inquiry') && headerLines[i].includes('FI Code')) {
+            labelStart = i;
+            singleLineHeader = true;
+            break;
+        }
     }
 
-    if (labelStart >= 0) {
-        // Count how many consecutive label lines there are
+    if (singleLineHeader && labelStart >= 0) {
+        // Single-line header: labels on one line, values on next line(s)
+        // Values line format: "16-Feb-2026 02:42:51 PM SXU215701 215 0101 I.D.L.C. ..."
+        for (let vi = labelStart + 1; vi < Math.min(labelStart + 5, headerLines.length); vi++) {
+            const valueLine = headerLines[vi];
+            const dateMatch = RE_INQUIRY_DATE.exec(valueLine);
+            if (dateMatch) {
+                data.inquiry_date = dateMatch[0];
+                // Remaining values follow after the date+time+AM/PM
+                const afterDate = valueLine.substring(dateMatch.index + dateMatch[0].length).trim();
+                const parts = afterDate.split(/\s+/);
+                if (parts.length >= 1) data.user_id = parts[0];
+                if (parts.length >= 2) data.fi_code = parts[1];
+                if (parts.length >= 3) data.branch_code = parts[2];
+                if (parts.length >= 4) data.fi_name = parts.slice(3).join(' ');
+                break;
+            }
+        }
+    } else if (labelStart >= 0) {
+        // Multi-line format: each label on separate line, values on separate lines after
         let labelCount = 0;
         for (let j = labelStart; j < Math.min(labelStart + labelNames.length, headerLines.length); j++) {
             if (labelNames.includes(headerLines[j])) {
@@ -241,25 +296,16 @@ function parseInquiryHeader(lines, sections) {
             }
         }
 
-        // Values start at labelStart + labelCount
         const valueStart = labelStart + labelCount;
-
-        // Map each label to its value by position
         for (let offset = 0; offset < labelNames.length; offset++) {
             const label = labelNames[offset];
             if (offset < labelCount && valueStart + offset < headerLines.length) {
                 const val = headerLines[valueStart + offset];
-                if (label === 'Date of Inquiry') {
-                    data.inquiry_date = val;
-                } else if (label === 'User ID') {
-                    data.user_id = val;
-                } else if (label === 'FI Code') {
-                    data.fi_code = val;
-                } else if (label === 'Branch Code') {
-                    data.branch_code = val;
-                } else if (label === 'FI Name') {
-                    data.fi_name = val;
-                }
+                if (label === 'Date of Inquiry') data.inquiry_date = val;
+                else if (label === 'User ID') data.user_id = val;
+                else if (label === 'FI Code') data.fi_code = val;
+                else if (label === 'Branch Code') data.branch_code = val;
+                else if (label === 'FI Name') data.fi_name = val;
             }
         }
     }
@@ -270,16 +316,6 @@ function parseInquiryHeader(lines, sections) {
             const m = RE_INQUIRY_DATE.exec(headerLines[i]);
             if (m) {
                 data.inquiry_date = m[0];
-                break;
-            }
-        }
-    }
-
-    // Fallback: if FI Name wasn't found, look for known patterns
-    if (!data.fi_name) {
-        for (let i = 0; i < headerLines.length; i++) {
-            if (headerLines[i].includes('I.D.L.C') || headerLines[i].includes('IDLC')) {
-                data.fi_name = headerLines[i];
                 break;
             }
         }
@@ -430,17 +466,46 @@ function parseSubjectInfo(lines, sections) {
         const line = sectionLines[i];
 
         // CIB Subject Code (e.g., "C0000747379")
+        // In real PDFs, often combined: "CIB subject code: Y0000586928 Type of subject: INDIVIDUAL"
         if (line.startsWith('CIB subject code:') || line === 'CIB subject code:') {
             let val = line.replace('CIB subject code:', '').trim();
+
+            // Handle combined line with "Type of subject" on same line
+            if (val.includes('Type of subject')) {
+                const parts = val.split('Type of subject');
+                val = parts[0].trim();
+                // Also extract subject type from the same line
+                let typeVal = parts[1] || '';
+                typeVal = typeVal.replace(/^[:\s]+/, '').trim();
+                if (typeVal) {
+                    data.subject_type = typeVal.toUpperCase();
+                }
+            }
+
             if (!val) {
                 val = getValueAfter(sectionLines, i);
             }
-            data.cib_subject_code = val;
+            // Clean: extract just the CIB code if extra text follows
+            const codeMatch = val.match(/^([A-Z]\d+)/);
+            if (codeMatch) {
+                data.cib_subject_code = codeMatch[1];
+            } else {
+                data.cib_subject_code = val;
+            }
         }
 
         // Type of Subject: "INDIVIDUAL" or "COMPANY" or "Individual"
-        else if (line.startsWith('Type of subject')) {
-            let val = line.includes(':') ? line.split(':').pop().trim() : '';
+        // Handles both "Type of subject: INDIVIDUAL" (with colon) and
+        // "Type of subject Individual" (without colon, older PDFs)
+        // Note: may already be set from the combined CIB subject code line above
+        else if (line.startsWith('Type of subject') && !data.subject_type) {
+            let val = '';
+            if (line.includes(':')) {
+                val = line.split(':').pop().trim();
+            } else {
+                // No colon: extract text after "Type of subject"
+                val = line.replace(/^Type of subject\s*/i, '').trim();
+            }
             if (!val) {
                 val = getValueAfter(sectionLines, i);
             }
@@ -455,10 +520,14 @@ function parseSubjectInfo(lines, sections) {
             if (!val) {
                 val = getValueAfter(sectionLines, i);
             }
+            // Strip "Reference number (Ref.):" and anything after it (inline on same line)
+            if (val.includes('Reference number')) {
+                val = val.split('Reference number')[0].trim();
+            }
             // Check for "Verified" tag and extract it separately
             if (val.includes('Verified')) {
                 data.name_verified = true;
-                val = val.replace(/\s*Verified\s*$/, '').trim();
+                val = val.replace(/\s*Verified\s*/g, '').trim();
             } else {
                 data.name_verified = false;
             }
@@ -491,11 +560,14 @@ function parseSubjectInfo(lines, sections) {
         }
 
         // Father's name
+        // In real PDFs, often merged: "Father's name: HASAN FARUK Sector type: PRIVATE"
         else if (line.startsWith("Father's name:") || line.startsWith("Father\u2019s name:")) {
             let val = line.split(':').slice(1).join(':').trim();
             if (!val) {
                 val = getValueAfter(sectionLines, i);
             }
+            // Strip trailing fields that share the same line
+            val = stripTrailingField(val, ['Sector type', 'Sector code', 'Legal form', 'Registration']);
             data.father_name = val;
         }
 
@@ -505,6 +577,7 @@ function parseSubjectInfo(lines, sections) {
             if (!val) {
                 val = getValueAfter(sectionLines, i);
             }
+            val = stripTrailingField(val, ['Sector code', 'Sector type', 'above']);
             data.mother_name = val;
         }
 
@@ -514,6 +587,7 @@ function parseSubjectInfo(lines, sections) {
             if (!val) {
                 val = getValueAfter(sectionLines, i);
             }
+            val = stripTrailingField(val, ['ID type', 'ID number', 'ID issue']);
             // Sometimes the next field label "ID type:" gets picked up
             if (val && val !== 'ID type:' && val !== '') {
                 data.spouse_name = val;
@@ -536,12 +610,18 @@ function parseSubjectInfo(lines, sections) {
                                 (data.dob !== undefined && i + 1 < sectionLines.length && sectionLines[i + 1].includes('Verified'));
         }
 
-        // Gender
+        // Gender — often merged with "ID issue date:" on same line
         else if (line.startsWith('Gender')) {
-            let val = line.includes(':') ? line.split(':').pop().trim() : '';
+            let val = '';
+            if (line.includes('Gender:')) {
+                val = line.split('Gender:')[1]?.trim() || '';
+            } else if (line.includes(':')) {
+                val = line.split(':').pop().trim();
+            }
             if (!val) {
                 val = getValueAfter(sectionLines, i);
             }
+            val = stripTrailingField(val, ['ID issue', 'ID type', 'ID number']);
             if (val) {
                 data.gender = val.toUpperCase();
             }
@@ -714,6 +794,46 @@ function parseSubjectInfo(lines, sections) {
                 data.legal_form = val;
             }
         }
+    }
+
+    // --- Secondary pass: extract inline fields from two-column layout ---
+    // In real CIB PDFs, right-column fields like "Sector type: PRIVATE" appear
+    // on the same line as left-column fields. Scan all lines for these.
+    const fullText = sectionLines.join('\n');
+
+    if (!data.sector_type) {
+        const m = fullText.match(/Sector type:\s*([A-Z]+)/);
+        if (m) data.sector_type = m[1];
+    }
+
+    if (!data.sector_code) {
+        const m = fullText.match(/Sector code:\s*(\d+(?:\s*\([^)]*\))?)/);
+        if (m) data.sector_code = m[1].trim();
+    }
+
+    if (!data.reference_number) {
+        const m = fullText.match(/Reference number\s*\(Ref\.\):\s*(\d+\s*(?:\([^)]*\))?)/);
+        if (m) data.reference_number = m[1].trim();
+    }
+
+    if (!data.tin) {
+        const m = fullText.match(/TIN:\s*(\d+)/);
+        if (m) data.tin = m[1];
+    }
+
+    if (!data.registration_number) {
+        const m = fullText.match(/Registration number:\s*([A-Z0-9-]+)/);
+        if (m) data.registration_number = m[1];
+    }
+
+    if (!data.registration_date) {
+        const m = fullText.match(/Registration date:\s*(\d{2}\/\d{2}\/\d{4})/);
+        if (m) data.registration_date = m[1];
+    }
+
+    if (!data.legal_form) {
+        const m = fullText.match(/Legal form:\s*(.+?)(?:\n|$)/);
+        if (m) data.legal_form = m[1].trim();
     }
 
     return data;
@@ -1110,43 +1230,91 @@ function parseClassificationMatrix(lines, sections, role) {
         return results;
     }
 
+    // Detect facility types dynamically — older reports (2024) have 4 types, newer have 5
+    // Scan the section header for "Non-Listed" to determine column count
+    let activeFacilityTypes = FACILITY_TYPES; // default: 5 types
+    let hasNonListed = false;
+    for (let i = start; i < Math.min(start + 10, end, lines.length); i++) {
+        if (lines[i].includes('Non-Listed')) {
+            hasNonListed = true;
+            break;
+        }
+    }
+    if (!hasNonListed) {
+        activeFacilityTypes = FACILITY_TYPES.filter(ft => ft !== 'Non-Listed securities');
+    }
+
+    const numCols = activeFacilityTypes.length; // 4 or 5 facility types
+    const expectedNums = numCols * 2; // count + amount per facility type
+
+    // The matrix is ROW-based: each row = classification name + inline numbers
+    // e.g., "STD 2 5,858,463 0 0 0 0 2 5,858,463" (4 types × 2 = 8 numbers)
+    // or "STD 1 1,187,429 0 0 0 0 0 0 1 1,187,429" (5 types × 2 = 10 numbers)
+    // Special: "Willful Default" may split across lines with "(WD)" or "(Appeal)" on next line
+
+    // Classification names to match (order matters — same as CLASSIFICATION_CATEGORIES)
+    const classPatterns = [
+        { name: 'STD', pattern: /^STD\s+/ },
+        { name: 'SMA', pattern: /^SMA\s+/ },
+        { name: 'SS (No)', pattern: /^SS\s*\(No\)\s+/ },
+        { name: 'SS (Yes)', pattern: /^SS\s*\(Yes\)\s+/ },
+        { name: 'DF', pattern: /^DF\s+/ },
+        { name: 'BL', pattern: /^BL\s+/ },
+        { name: 'BLW', pattern: /^BLW\s+/ },
+        { name: 'Terminated', pattern: /^Terminated\s+/ },
+        { name: 'Requested', pattern: /^Requested\s+/ },
+        { name: 'Stay Order', pattern: /^Stay\s+Order\s+/ },
+        { name: 'Willful Default (WD)', pattern: /^Willful\s+Default\s*(?:\(WD\))?\s+/ },
+        { name: 'Willful Default (Appeal)', pattern: /^Willful\s+Default\s*(?:\(Appeal\))?\s+/ },
+    ];
+
+    // Track which classifications we've already seen (to distinguish the two "Willful Default" rows)
+    const seen = new Set();
+
     for (let i = start; i < Math.min(end, lines.length); i++) {
-        const line = lines[i];
+        const line = lines[i].trim();
 
-        for (const ftype of FACILITY_TYPES) {
-            if (line.includes(ftype) && (line.trim() === ftype || line.trim() === ftype + ':')) {
-                // Collect numbers following this facility type
-                const nums = [];
-                let j = i + 1;
-                while (j < Math.min(i + 30, end, lines.length) && nums.length < CLASSIFICATION_CATEGORIES.length * 2) {
-                    const val = lines[j].trim();
-                    if (val && RE_AMOUNT.test(val)) {
-                        try {
-                            nums.push(parseFloat(val.replace(/,/g, '')));
-                        } catch (e) {
-                            // skip
-                        }
-                    } else if (FACILITY_TYPES.includes(val) || val === 'Total') {
-                        break;
-                    }
-                    j++;
+        for (const cp of classPatterns) {
+            if (seen.has(cp.name)) continue;
+
+            const m = cp.pattern.exec(line);
+            if (!m) continue;
+
+            // For "Willful Default" without (WD)/(Appeal) qualifier, need to check next line
+            if (cp.name === 'Willful Default (WD)' && !line.includes('(WD)')) {
+                // This is the first "Willful Default" row — check next line for "(WD)"
+                const nextLine = (i + 1 < lines.length) ? lines[i + 1].trim() : '';
+                if (nextLine !== '(WD)' && !nextLine.startsWith('(WD)')) {
+                    // Might be "(WD)" on same line but we didn't match — skip
+                    continue;
                 }
+            }
+            if (cp.name === 'Willful Default (Appeal)' && !line.includes('(Appeal)')) {
+                const nextLine = (i + 1 < lines.length) ? lines[i + 1].trim() : '';
+                if (nextLine !== '(Appeal)' && !nextLine.startsWith('(Appeal)')) {
+                    continue;
+                }
+            }
 
-                // Each classification has (count, amount) pair
-                for (let ci = 0; ci < CLASSIFICATION_CATEGORIES.length; ci++) {
-                    const idx = ci * 2;
-                    if (idx + 1 < nums.length) {
-                        const count = Math.floor(nums[idx]);
-                        const amount = nums[idx + 1];
-                        if (count > 0 || amount > 0) {
-                            results.push({
-                                role: role.toUpperCase(),
-                                facility_type: ftype,
-                                classification: CLASSIFICATION_CATEGORIES[ci],
-                                contract_count: count,
-                                outstanding_amount: amount,
-                            });
-                        }
+            // Extract numbers from the rest of the line after the classification name
+            const afterName = line.substring(m[0].length);
+            const numTokens = afterName.split(/\s+/).filter(t => t && /^[\d,]+$/.test(t));
+            const nums = numTokens.map(t => parseFloat(t.replace(/,/g, '')));
+
+            if (nums.length >= expectedNums) {
+                seen.add(cp.name);
+                // Map numbers to facility types: pairs of (count, amount)
+                for (let fi = 0; fi < numCols; fi++) {
+                    const count = Math.floor(nums[fi * 2]);
+                    const amount = nums[fi * 2 + 1];
+                    if (count > 0 || amount > 0) {
+                        results.push({
+                            role: role.toUpperCase(),
+                            facility_type: activeFacilityTypes[fi],
+                            classification: cp.name,
+                            contract_count: count,
+                            outstanding_amount: amount,
+                        });
                     }
                 }
                 break;
@@ -1193,7 +1361,8 @@ function parseNonFunded(lines, sections, role) {
         'Other indirect facility (OF)': 'OF'
     };
 
-    // Collect numeric values after each facility type label
+    // Parse non-funded facility rows. Real PDFs produce inline rows like:
+    // "Guarantee (GU) 0 0 0 0 0 0 0 0" — label + 8 numbers on one line
     for (let i = start; i < Math.min(end, lines.length); i++) {
         const line = lines[i];
 
@@ -1203,11 +1372,31 @@ function parseNonFunded(lines, sections, role) {
                 (code === 'LC' && line.includes('Letter of credit')) ||
                 (code === 'OF' && line.includes('Other indirect'))) {
 
-                // Collect the next several numeric values
-                const nums = [];
+                // First try: extract numbers from the SAME line (inline format)
+                const tokens = line.split(/\s+/);
+                const inlineNums = tokens.filter(t => RE_AMOUNT.test(t.trim())).map(t => parseFloat(t.replace(/,/g, '')));
+
+                if (inlineNums.length >= 8) {
+                    results.push({
+                        facility_type: code,
+                        role: role.toUpperCase(),
+                        living_count: Math.floor(inlineNums[0]),
+                        living_amount: inlineNums[1],
+                        terminated_count: Math.floor(inlineNums[2]),
+                        terminated_amount: inlineNums[3],
+                        requested_count: Math.floor(inlineNums[4]),
+                        requested_amount: inlineNums[5],
+                        stay_order_count: Math.floor(inlineNums[6]),
+                        stay_order_amount: inlineNums[7]
+                    });
+                    break;
+                }
+
+                // Fallback: collect numbers from subsequent lines
+                const nums = [...inlineNums]; // start with any inline nums
                 let j = i + 1;
                 while (j < Math.min(i + 20, end, lines.length) && nums.length < 8) {
-                    const val = lines[j];
+                    const val = lines[j].trim();
                     if (RE_AMOUNT.test(val) && !(val in nfTypes)) {
                         try {
                             nums.push(parseFloat(val.replace(/,/g, '')));
@@ -1371,8 +1560,14 @@ function parseSingleContract(blockLines, isInstallment) {
 
     // --- CIB Contract Code ---
     for (let idx = 0; idx < Math.min(15, blockLines.length); idx++) {
-        if (RE_CIB_CODE.test(blockLines[idx])) {
-            contract.cib_contract_code = blockLines[idx];
+        const codeLine = blockLines[idx].trim();
+        if (RE_CIB_CODE.test(codeLine)) {
+            contract.cib_contract_code = codeLine;
+            break;
+        }
+        // Handle masked contract codes from other banks (appear as "###")
+        if (codeLine === '###') {
+            contract.cib_contract_code = '###';
             break;
         }
     }
@@ -1389,22 +1584,33 @@ function parseSingleContract(blockLines, isInstallment) {
         const line = blockLines[i];
 
         // Role: Borrower or Guarantor
+        // In two-column layout: "Role: Borrower Date of Last Update: 10/09/2024 ..."
         if (line === 'Role:' || line.startsWith('Role:')) {
             let val = line.replace('Role:', '').trim();
             if (!val) {
                 val = getValueAfter(blockLines, i);
             }
+            // Strip trailing inline fields
+            val = stripTrailingField(val, ['Date of Last', 'Contract History']);
             if (val) {
                 contract.role = val;
+            }
+            // Also extract Date of Last Update from same line
+            if (line.includes('Date of Last Update:')) {
+                const m = RE_DATE.exec(line.split('Date of Last Update:')[1]);
+                if (m) contract.last_update = m[0];
             }
         }
 
         // Phase: Living, Terminated, Terminated in advance, Requested
+        // In two-column layout: "Phase: Living Date of Law suit: -"
         else if (line === 'Phase:' || line.startsWith('Phase:')) {
             let val = line.replace('Phase:', '').trim();
             if (!val) {
                 val = getValueAfter(blockLines, i);
             }
+            // Strip trailing inline fields
+            val = stripTrailingField(val, ['Date of Law', 'Date of last', 'Monthly History']);
             // "Terminated in advance" spans two lines sometimes
             if (val && val.toLowerCase() === 'terminated in') {
                 const nextVal = (i + 2 < blockLines.length) ? blockLines[i + 2].trim() : '';
@@ -1418,21 +1624,27 @@ function parseSingleContract(blockLines, isInstallment) {
         }
 
         // Facility type: Term Loan, Working Capital, Hire-Purchase, etc.
+        // In two-column layout: "Facility: Hire-Purchase under Date of last payment:"
         else if (line === 'Facility:' || line.startsWith('Facility:')) {
             let val = line.replace('Facility:', '').trim();
             if (!val) {
                 val = getValueAfter(blockLines, i);
             }
-            // May span multiple lines
+            // Strip trailing inline fields
+            val = stripTrailingField(val, ['Date of last', 'Date of classification', 'Accounting', 'Monthly']);
+            // May span multiple lines (e.g., "Hire-Purchase under" + "shirkatul Meelk")
             if (val) {
                 let j = i + 1;
                 while (j < Math.min(i + 4, blockLines.length)) {
-                    const ns = blockLines[j];
+                    const ns = blockLines[j].trim();
                     if (ns && ns === val) {
                         j++;
                         continue;
                     }
-                    if (ns && !ns.startsWith('Date') && !/^\d/.test(ns) && !ns.includes(':')) {
+                    // Continue appending if line doesn't look like a metadata label or data
+                    if (ns && !ns.startsWith('Date') && !ns.startsWith('Starting') &&
+                        !ns.startsWith('Accounting') && !/^\d/.test(ns) && !ns.includes(':') &&
+                        !ns.startsWith('Monthly') && !RE_DATE.test(ns)) {
                         val = val + ' ' + ns;
                         j++;
                     } else {
@@ -1443,8 +1655,8 @@ function parseSingleContract(blockLines, isInstallment) {
             }
         }
 
-        // Date of Last Update
-        else if (line.startsWith('Date of Last Update:')) {
+        // Date of Last Update (standalone line)
+        else if (line.startsWith('Date of Last Update:') && !contract.last_update) {
             let m = RE_DATE.exec(line);
             if (m) {
                 contract.last_update = m[0];
@@ -1506,57 +1718,80 @@ function parseSingleContract(blockLines, isInstallment) {
 
         // Special multi-line fields:
 
-        // Total Disbursement Amount (label split across two lines)
-        if (line === 'Total Disbursement') {
-            const nextLine = (i + 1 < blockLines.length) ? blockLines[i + 1] : '';
-            if (nextLine.startsWith('Amount:')) {
-                let val = nextLine.replace('Amount:', '').trim();
-                if (!val) {
-                    val = getValueAfter(blockLines, i + 1);
-                }
-                const m = val.match(/[\d,]+/);
-                if (m) {
-                    contract.total_disbursement = parseFloat(m[0].replace(/,/g, ''));
-                }
-            }
-        }
-
-        // Total number of installments
-        if (line.startsWith('Total number of')) {
-            const nextLine = (i + 1 < blockLines.length) ? blockLines[i + 1] : '';
-            if (nextLine.includes('installments:')) {
-                let val = nextLine.replace('installments:', '').trim();
-                if (!val) {
-                    val = getValueAfter(blockLines, i + 1);
-                }
-                const m = val.match(/(\d+)/);
-                if (m) {
-                    contract.total_installments = parseInt(m[1], 10);
-                }
-            }
-        }
-
-        // Remaining installments (Amount and Number on separate lines)
-        if (line.startsWith('Remaining installments') && !line.includes('Amount') && !line.includes('Number')) {
-            for (let k = i + 1; k < Math.min(i + 4, blockLines.length); k++) {
-                const ns = blockLines[k];
-                if (ns.startsWith('Amount:')) {
-                    let val = ns.replace('Amount:', '').trim();
-                    if (!val) {
-                        val = getValueAfter(blockLines, k);
-                    }
+        // Total Disbursement Amount — multiple formats:
+        // (1) Two lines: "Total Disbursement" then "Amount: 5,000,000"
+        // (2) Inline: "Total Disbursement 5,000,000 Payments periodicity: Monthly"
+        // (3) Split with interleave: "Total Disbursement" then "Amount: Installments ..."
+        if (line.includes('Total Disbursement') && !contract.total_disbursement) {
+            // Try inline: "Total Disbursement 5,000,000 ..."
+            const inlineAmtMatch = line.match(/Total Disbursement\s+([\d,]+)/);
+            if (inlineAmtMatch) {
+                contract.total_disbursement = parseFloat(inlineAmtMatch[1].replace(/,/g, ''));
+            } else {
+                // Try next-line: "Amount: 5,000,000"
+                const nextLine = (i + 1 < blockLines.length) ? blockLines[i + 1] : '';
+                if (nextLine.startsWith('Amount:')) {
+                    let val = nextLine.replace('Amount:', '').trim();
                     const m = val.match(/[\d,]+/);
                     if (m) {
-                        contract.remaining_amount = parseFloat(m[0].replace(/,/g, ''));
+                        contract.total_disbursement = parseFloat(m[0].replace(/,/g, ''));
                     }
-                } else if (ns.startsWith('Number:')) {
-                    let val = ns.replace('Number:', '').trim();
+                }
+            }
+        }
+
+        // Total number of installments — formats:
+        // (1) Two lines: "Total number of" then "installments: 60"
+        // (2) Inline: "Total number of 60 Number of time(s) ..."
+        if (line.startsWith('Total number of') && !contract.total_installments) {
+            // Try inline: "Total number of 60 Number of ..."
+            const inlineMatch = line.match(/Total number of\s+(\d+)/);
+            if (inlineMatch) {
+                contract.total_installments = parseInt(inlineMatch[1], 10);
+            } else {
+                const nextLine = (i + 1 < blockLines.length) ? blockLines[i + 1] : '';
+                if (nextLine.includes('installments:')) {
+                    let val = nextLine.replace('installments:', '').trim();
                     if (!val) {
-                        val = getValueAfter(blockLines, k);
+                        val = getValueAfter(blockLines, i + 1);
                     }
                     const m = val.match(/(\d+)/);
                     if (m) {
-                        contract.remaining_count = parseInt(m[1], 10);
+                        contract.total_installments = parseInt(m[1], 10);
+                    }
+                }
+            }
+        }
+
+        // Remaining installments — formats:
+        // (1) "Remaining installments" then "Amount:" and "Number:" on next lines
+        // (2) Inline: "Remaining 46 Reorganized credit: NO ..."
+        if (line.startsWith('Remaining') && !contract.remaining_count) {
+            // Try inline: "Remaining 46 Reorganized credit: NO"
+            const inlineMatch = line.match(/Remaining\s+(\d+)\s+Reorganized/);
+            if (inlineMatch) {
+                contract.remaining_count = parseInt(inlineMatch[1], 10);
+            } else if (line.startsWith('Remaining installments') && !line.includes('Amount') && !line.includes('Number')) {
+                for (let k = i + 1; k < Math.min(i + 4, blockLines.length); k++) {
+                    const ns = blockLines[k];
+                    if (ns.startsWith('Amount:')) {
+                        let val = ns.replace('Amount:', '').trim();
+                        if (!val) {
+                            val = getValueAfter(blockLines, k);
+                        }
+                        const m = val.match(/[\d,]+/);
+                        if (m) {
+                            contract.remaining_amount = parseFloat(m[0].replace(/,/g, ''));
+                        }
+                    } else if (ns.startsWith('Number:')) {
+                        let val = ns.replace('Number:', '').trim();
+                        if (!val) {
+                            val = getValueAfter(blockLines, k);
+                        }
+                        const m = val.match(/(\d+)/);
+                        if (m) {
+                            contract.remaining_count = parseInt(m[1], 10);
+                        }
                     }
                 }
             }
@@ -1649,7 +1884,70 @@ function parseMonthlyHistory(blockLines, isInstallment) {
         }
     }
 
-    // Words to skip — these are column headers, section labels, and metadata
+    // Regex for orphan timestamps (e.g., "11:42:36 PM" on a line by itself)
+    const RE_TIME_ONLY = /^\d{1,2}:\d{2}(:\d{2})?\s*[AP]M$/i;
+
+    // Regex for inline monthly history row:
+    // date amount amount amount/npi status default_wd
+    // e.g., "31/08/2024 4,014,223 0 0 STD No"
+    // e.g., "31/08/2024 5,000,000 4,014,223 0 STD No" (non-installment with sanction_limit)
+    const RE_INLINE_ROW = /(\d{2}\/\d{2}\/\d{4})\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+(STD|SMA|SS|DF|BL|BLW)\s+(No|Yes|WD)/;
+
+    // First pass: try to extract inline rows (common in real CIB PDFs where
+    // contract metadata and monthly history are in two-column layout)
+    for (let i = mhStart + 1; i < blockLines.length; i++) {
+        const line = blockLines[i];
+
+        // Stop at section boundaries
+        if (line.startsWith('Contribution History') || line.startsWith('Other subjects linked')) {
+            break;
+        }
+
+        const inlineMatch = RE_INLINE_ROW.exec(line);
+        if (inlineMatch) {
+            try {
+                const date = inlineMatch[1];
+                const v1 = parseFloat(inlineMatch[2].replace(/,/g, ''));
+                const v2 = parseFloat(inlineMatch[3].replace(/,/g, ''));
+                const v3 = parseFloat(inlineMatch[4].replace(/,/g, ''));
+                const status = inlineMatch[5];
+                const defaultWd = inlineMatch[6];
+
+                if (isNonInst) {
+                    history.push({
+                        accounting_date: date,
+                        sanction_limit: v1,
+                        outstanding: v2,
+                        overdue: v3,
+                        npi: null,
+                        status: status,
+                        default_wd: defaultWd,
+                        remarks_wd: ''
+                    });
+                } else {
+                    history.push({
+                        accounting_date: date,
+                        outstanding: v1,
+                        overdue: v2,
+                        npi: Math.floor(v3),
+                        sanction_limit: null,
+                        status: status,
+                        default_wd: defaultWd,
+                        remarks_wd: ''
+                    });
+                }
+            } catch (e) {
+                // skip malformed row
+            }
+        }
+    }
+
+    // If inline parsing found rows, return them (this handles the interleaved two-column layout)
+    if (history.length > 0) {
+        return history;
+    }
+
+    // Fallback: one-value-per-line format (used in some PDFs or text extractions)
     const skipWords = new Set([
         'Accounting', 'Date', 'Outstanding', 'Overdue', 'NPI', 'Status',
         'Default', '&', 'Willful', 'Remarks', 'for', 'WD', 'SancLmt',
@@ -1668,48 +1966,30 @@ function parseMonthlyHistory(blockLines, isInstallment) {
         'rescheduled', 'Subsidized', 'Amount:'
     ];
 
-    // Non-data values that appear between sections
     const skipValues = new Set([
         'Term Loan', 'Term', 'Loan', 'Living', 'Terminated',
         'Terminated in', 'advance', 'Cheque', 'Other', '-', 'NO', 'YES',
         'Working capital', 'financing', 'Hire-Purchase under',
-        'shirkatul Meelk', 'Requested'
+        'shirkatul Meelk', 'Requested', '###'
     ]);
 
-    // Collect all data values
     const values = [];
     for (let i = mhStart + 1; i < blockLines.length; i++) {
         const line = blockLines[i];
 
-        // Stop at section boundaries
-        if (line.startsWith('Contribution History')) {
-            break;
-        }
-        if (line.startsWith('Other subjects linked')) {
+        if (line.startsWith('Contribution History') || line.startsWith('Other subjects linked')) {
             break;
         }
 
-        if (!line) {
-            continue;
-        }
-        if (skipWords.has(line)) {
-            continue;
-        }
-        if (line.split(/\s+/).every(w => skipWords.has(w))) {
-            continue;
-        }
-        if (skipPrefixes.some(p => line.startsWith(p))) {
-            continue;
-        }
-        if (RE_PAGE_NUMBER.test(line)) {
-            continue;
-        }
-        if (skipValues.has(line)) {
-            continue;
-        }
+        if (!line) continue;
+        if (skipWords.has(line)) continue;
+        if (line.split(/\s+/).every(w => skipWords.has(w))) continue;
+        if (skipPrefixes.some(p => line.startsWith(p))) continue;
+        if (RE_PAGE_NUMBER.test(line)) continue;
+        if (skipValues.has(line)) continue;
+        if (RE_TIME_ONLY.test(line)) continue;
 
-        // Accept: dates, numbers, status codes, default/WD values
-        if (RE_DATE.test(line) || /^[\d,]+$/.test(line) ||
+        if (RE_DATE.test(line) || RE_AMOUNT.test(line.trim()) ||
                 RE_STATUS.test(line) || RE_DEFAULT_WD.test(line)) {
             values.push(line);
         }
@@ -1728,7 +2008,7 @@ function parseMonthlyHistory(blockLines, isInstallment) {
                         sanction_limit: parseFloat(values[idx + 1].replace(/,/g, '')),
                         outstanding: parseFloat(values[idx + 2].replace(/,/g, '')),
                         overdue: parseFloat(values[idx + 3].replace(/,/g, '')),
-                        npi: null, // Non-installment doesn't have NPI
+                        npi: null,
                         status: values[idx + 4],
                         default_wd: values[idx + 5],
                         remarks_wd: ''

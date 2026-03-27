@@ -843,6 +843,19 @@ class CIBDatabase {
         return row !== null;
     }
 
+    /**
+     * Get the CIB subject code for a given file hash.
+     * Returns the code string if found, or null if not.
+     */
+    getSubjectByFileHash(fileHash) {
+        const row = queryOne(
+            this.db,
+            "SELECT cib_subject_code FROM subjects WHERE file_hash=? LIMIT 1",
+            [fileHash]
+        );
+        return row ? row.cib_subject_code : null;
+    }
+
     getSubjectFull(cibCode) {
         const row = queryOne(this.db, "SELECT * FROM subjects WHERE cib_subject_code=?", [cibCode]);
         if (!row) return null;

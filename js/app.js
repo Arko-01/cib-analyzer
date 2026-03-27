@@ -97,14 +97,23 @@ function initTabs(container) {
 
 // ── Theme Toggle ──
 function initTheme() {
-    const saved = localStorage.getItem('cib-theme') || 'light';
-    document.documentElement.setAttribute('data-theme', saved);
+    const saved = localStorage.getItem('cib-theme');
+    if (saved) {
+        // User has an explicit preference
+        document.documentElement.setAttribute('data-theme', saved);
+    } else {
+        // No saved preference — respect system dark mode via CSS media query
+        // Remove the hardcoded data-theme so the @media (prefers-color-scheme: dark) rule applies
+        document.documentElement.removeAttribute('data-theme');
+    }
 
     const btn = $('#themeToggle');
     if (btn) {
         btn.addEventListener('click', () => {
             const current = document.documentElement.getAttribute('data-theme');
-            const next = current === 'dark' ? 'light' : 'dark';
+            // If no explicit theme, detect current system theme
+            const effectiveTheme = current || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+            const next = effectiveTheme === 'dark' ? 'light' : 'dark';
             document.documentElement.setAttribute('data-theme', next);
             localStorage.setItem('cib-theme', next);
         });
@@ -149,7 +158,10 @@ function showPage(page) {
     // Toggle page containers
     for (const r of ROUTES) {
         const el = $(`#page-${r}`);
-        if (el) el.style.display = r === page ? '' : 'none';
+        if (el) {
+            el.classList.toggle('active', r === page);
+            el.style.display = r === page ? 'block' : 'none';
+        }
     }
 
     // Update nav active states
@@ -307,15 +319,12 @@ function initProcessPage() {
                     const fileHash = await computeFileHash(arrayBuffer);
 
                     // Check if hash already exists
-                    const hashExists = db.fileHashExists(fileHash);
+                    const existingCode = db.getSubjectByFileHash(fileHash);
                     let replaced = false;
-                    if (hashExists) {
-                        // File already processed — check if we should replace
-                        const existingCode = hashExists;
-                        if (existingCode) {
-                            await db.deleteSubject(existingCode);
-                            replaced = true;
-                        }
+                    if (existingCode) {
+                        // File already processed — replace the existing subject
+                        await db.deleteSubject(existingCode);
+                        replaced = true;
                     }
 
                     // Extract text
@@ -463,7 +472,11 @@ function loadSubjects(query) {
 
 function renderSearchResults(results, resultsList) {
     resultsList.innerHTML = results.length === 0
-        ? '<div class="p-3 text-muted text-center">No results found</div>'
+        ? `<div class="empty-state">
+               <div class="empty-state-icon">&#128269;</div>
+               <div class="empty-state-title">No subjects found</div>
+               <div class="empty-state-text">Process CIB PDF reports to populate the database, or adjust your search query.</div>
+           </div>`
         : results.map(r => {
             const code = r.cib_subject_code || '';
             const name = r.name || r.trade_name || 'Unknown';
@@ -1276,7 +1289,13 @@ function renderLog(entries, tableBody, summaryEl) {
     const failCount = entries.filter(e => e.status === 'FAILED').length;
 
     tableBody.innerHTML = entries.length === 0
-        ? '<tr><td colspan="7" class="text-center text-muted p-4">No log entries found</td></tr>'
+        ? `<tr><td colspan="7">
+               <div class="empty-state">
+                   <div class="empty-state-icon">&#128203;</div>
+                   <div class="empty-state-title">No processing logs yet</div>
+                   <div class="empty-state-text">Process CIB PDF reports to see activity here.</div>
+               </div>
+           </td></tr>`
         : entries.map(e => {
             const statusCls = e.status === 'SUCCESS' ? 'status-ok' : e.status === 'FAILED' ? 'status-fail' : '';
             const statusLabel = e.status === 'SUCCESS' ? 'OK' : e.status === 'FAILED' ? 'FAIL' : (e.status || '');

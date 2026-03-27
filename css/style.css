@@ -1218,3 +1218,195 @@ body {
 /* DB import/export buttons in export panel */
 .db-actions { display: flex; gap: 8px; margin-top: 12px; }
 .db-actions .btn { flex: 1; }
+
+
+/* =============================================================================
+   SYSTEM DARK MODE — auto-detect when no manual theme is set
+   ============================================================================= */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --bg-primary: #1a1a2e;
+        --bg-secondary: #16213e;
+        --bg-card: #1e2d50;
+        --bg-input: #16213e;
+        --bg-header: #0f3460;
+        --bg-hover: #253a5e;
+        --fg-primary: #e0e0e0;
+        --fg-secondary: #a0a0b0;
+        --fg-muted: #6c6c80;
+        --fg-on-header: #FFFFFF;
+        --accent: #3a6dbf;
+        --accent-hover: #4a80d0;
+        --accent-light: #253a5e;
+        --success: #96C458;
+        --success-bg: #1b3a1b;
+        --warning: #F5A623;
+        --warning-bg: #3a2a10;
+        --danger: #DD4749;
+        --danger-bg: #3a1212;
+        --danger-dark: #ff9999;
+        --border: #2a3a5e;
+        --border-light: #253050;
+        --shadow: 0 1px 3px rgba(0,0,0,0.3);
+        --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+        --scrollbar-track: #1a1a2e;
+        --scrollbar-thumb: #3a4a6e;
+    }
+}
+
+
+/* =============================================================================
+   ADDITIONAL MOBILE RESPONSIVE RULES
+   ============================================================================= */
+
+/* Make tables horizontally scrollable on small screens */
+@media (max-width: 768px) {
+    .table-container, .history-table-wrapper, .contracts-table-container {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    table {
+        min-width: 600px;
+    }
+    /* Stack process page controls */
+    .process-page {
+        padding: 12px;
+    }
+    .file-item {
+        font-size: 0.85rem;
+    }
+    /* Deal page cards */
+    .dscr-cards {
+        grid-template-columns: 1fr;
+    }
+    .deal-page {
+        padding: 12px;
+    }
+    /* Log page */
+    .log-page {
+        padding: 12px;
+    }
+}
+
+@media (max-width: 480px) {
+    .app-header {
+        padding: 6px 8px;
+    }
+    .nav-link span {
+        display: none;
+    }
+    .header-brand {
+        font-size: 0.9rem;
+    }
+    body {
+        font-size: 13px;
+    }
+    .profile-card, .detail-panel {
+        padding: 12px;
+    }
+    .summary-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+
+/* =============================================================================
+   EMPTY STATES
+   ============================================================================= */
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 20px;
+    color: var(--fg-muted);
+    text-align: center;
+}
+.empty-state-icon {
+    font-size: 3rem;
+    margin-bottom: 16px;
+    opacity: 0.5;
+}
+.empty-state-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--fg-secondary);
+    margin-bottom: 8px;
+}
+.empty-state-text {
+    font-size: 0.9rem;
+    max-width: 400px;
+    line-height: 1.5;
+}
+
+/* Skeleton loading animation */
+.skeleton {
+    background: linear-gradient(90deg, var(--bg-secondary) 25%, var(--bg-hover) 50%, var(--bg-secondary) 75%);
+    background-size: 200% 100%;
+    animation: skeleton-pulse 1.5s ease-in-out infinite;
+    border-radius: var(--radius-sm);
+}
+@keyframes skeleton-pulse {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+.skeleton-line {
+    height: 14px;
+    margin-bottom: 8px;
+    width: 100%;
+}
+.skeleton-line.short { width: 60%; }
+.skeleton-line.medium { width: 80%; }
+
+/* Toast improvements */
+.toast {
+    animation: toast-in 0.3s ease-out, toast-out 0.3s ease-in 3.5s forwards;
+}
+@keyframes toast-in {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+@keyframes toast-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
+/* Pagination controls */
+.pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 0;
+}
+.pagination .btn {
+    min-width: 36px;
+    padding: 6px 12px;
+}
+.pagination-info {
+    font-size: 0.85rem;
+    color: var(--fg-secondary);
+}
+
+/* Sort indicators for table headers */
+th.sortable {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    padding-right: 18px;
+}
+th.sortable::after {
+    content: '\2195';
+    position: absolute;
+    right: 4px;
+    opacity: 0.3;
+    font-size: 0.8em;
+}
+th.sortable.sort-asc::after {
+    content: '\2191';
+    opacity: 0.8;
+}
+th.sortable.sort-desc::after {
+    content: '\2193';
+    opacity: 0.8;
+}
