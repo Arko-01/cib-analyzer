@@ -867,6 +867,7 @@ body {
     border-radius: 2px;
     cursor: pointer;
     position: relative;
+    background: var(--tl-bg, #E0E0E0);
 }
 .timeline-block:hover .timeline-tooltip {
     display: block;
@@ -899,6 +900,7 @@ body {
     gap: 12px;
     flex-wrap: wrap;
 }
+.rel-card-body { flex: 1; }
 .rel-card .rel-name { font-weight: 600; }
 .rel-card .rel-meta {
     font-size: 0.78rem;
@@ -942,6 +944,7 @@ body {
     margin-bottom: 8px;
     border-left-width: 3px;
     border-left-style: solid;
+    border-left-color: var(--band-color, #AAAAAA);
 }
 
 /* DSCR result card color top border */
@@ -1083,6 +1086,7 @@ body {
     font-size: 2rem;
     font-weight: 800;
     line-height: 1.2;
+    color: var(--dscr-color, inherit);
 }
 .dscr-card .dscr-label {
     font-size: 0.78rem;

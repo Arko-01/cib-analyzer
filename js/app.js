@@ -349,30 +349,33 @@ function initProcessPage() {
 
                     const duration = ((performance.now() - startTime) / 1000).toFixed(1);
                     const statusLabel = replaced ? 'REPLACED' : 'OK';
-                    const logCls = 'log-ok';
 
                     if (statusEl) {
                         statusEl.textContent = replaced ? 'Replaced' : 'Done';
                         statusEl.className = `file-status ${replaced ? 'text-warning' : 'text-success'}`;
                     }
 
-                    processLog.innerHTML += `<div class="${logCls}">[${i + 1}/${total}] ${statusLabel}: ${escapeHtml(file.name)} (${duration}s)</div>`;
-
-                    // Log to processing log
-                    await db.logProcessing({
-                        batch_id: batchId,
-                        source_file: file.name,
-                        file_hash: fileHash,
-                        cib_subject_code: cibCode || '',
-                        subject_name: report.subject?.name || '',
-                        status: replaced ? 'REPLACED' : 'SUCCESS',
-                        duration_seconds: parseFloat(duration),
-                        contracts_count: (report.contracts || []).length,
-                        error_message: null,
-                    });
+                    processLog.innerHTML += `<div class="log-ok">[${i + 1}/${total}] ${statusLabel}: ${escapeHtml(file.name)} (${duration}s)</div>`;
 
                     if (replaced) replacedCount++;
                     else successCount++;
+
+                    // Log to processing log (non-critical — don't let this fail the whole file)
+                    try {
+                        await db.logProcessing({
+                            batchId,
+                            sourceFile: file.name,
+                            fileHash,
+                            cibCode: cibCode || '',
+                            name: report.subject?.name || '',
+                            status: replaced ? 'REPLACED' : 'SUCCESS',
+                            duration: parseFloat(duration),
+                            contracts: (report.contracts || []).length,
+                            replacement: replaced,
+                        });
+                    } catch (_logErr) {
+                        console.warn('Failed to log processing entry:', _logErr);
+                    }
 
                 } catch (err) {
                     failedCount++;
@@ -385,17 +388,17 @@ function initProcessPage() {
 
                     processLog.innerHTML += `<div class="log-err">[${i + 1}/${total}] FAIL: ${escapeHtml(file.name)} — ${escapeHtml(err.message)} (${duration}s)</div>`;
 
-                    await db.logProcessing({
-                        batch_id: batchId,
-                        source_file: file.name,
-                        file_hash: '',
-                        cib_subject_code: '',
-                        subject_name: '',
-                        status: 'FAILED',
-                        duration_seconds: parseFloat(duration),
-                        contracts_count: 0,
-                        error_message: err.message,
-                    });
+                    try {
+                        await db.logProcessing({
+                            batchId,
+                            sourceFile: file.name,
+                            status: 'FAILED',
+                            duration: parseFloat(duration),
+                            message: err.message,
+                        });
+                    } catch (_logErr) {
+                        console.warn('Failed to log processing entry:', _logErr);
+                    }
                 }
 
                 processLog.scrollTop = processLog.scrollHeight;
@@ -755,7 +758,7 @@ function renderTimeline(history) {
         const color = TIMELINE_COLORS[cls] || TIMELINE_COLORS.NO_DATA;
         const overdue = parseFloat(h.overdue) || 0;
         const tip = `${h.accounting_date || ''} | ${cls || 'N/A'} | Overdue: ${formatTaka(overdue)}`;
-        return `<div class="timeline-block" style="background:${color}" title="${escapeHtml(tip)}">
+        return `<div class="timeline-block" style="--tl-bg:${color}" title="${escapeHtml(tip)}">
             <div class="timeline-tooltip">${escapeHtml(tip)}</div>
         </div>`;
     }).join('');
@@ -773,7 +776,7 @@ function renderRelationships(relationships) {
         const cls = r.worst_classification || '';
 
         html += `<div class="rel-card">
-            <div style="flex:1">
+            <div class="rel-card-body">
                 <div class="rel-name">${escapeHtml(name)}</div>
                 <div class="rel-meta">${escapeHtml(code)} &middot; ${escapeHtml(role)}</div>
             </div>
@@ -795,7 +798,7 @@ function renderHistory(contracts) {
 
         const isLiving = (c.phase || '').toLowerCase() === 'living';
         const bandColor = isLiving ? '#96C458' : '#AAAAAA';
-        html += `<div class="facility-section-header" style="border-left-color:${bandColor}">
+        html += `<div class="facility-section-header" style="--band-color:${bandColor}">
             ${escapeHtml(c.cib_contract_code || '')} &mdash; ${escapeHtml(c.facility_type || '')} (${escapeHtml(c.role || '')})
         </div>`;
 
@@ -1146,7 +1149,7 @@ function initDealPage() {
             const color = DSCR_COLORS[r.color] || '#AAAAAA';
             return `<div class="dscr-card ${isBest ? 'best' : ''}" data-color="${r.color}">
                 <div class="text-sm text-muted mb-2">Scenario ${i + 1}</div>
-                <div class="dscr-value" style="color:${color}">${r.dscr_display}</div>
+                <div class="dscr-value" style="--dscr-color:${color}">${r.dscr_display}</div>
                 <div class="dscr-label">Debt Service Coverage Ratio</div>
                 <div class="dscr-emi">EMI: ${formatTaka(r.emi)}</div>
                 <div class="text-xs text-muted mt-2">${formatTaka(r.sanction)} @ ${r.rate}% for ${r.tenure}m</div>
