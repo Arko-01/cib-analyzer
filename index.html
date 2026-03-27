@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CIB Analyzer v2.0.0</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="app-header">
+        <div class="header-left">
+            <h1 class="app-title">CIB Analyzer</h1>
+            <span class="app-version">v2.0.0</span>
+        </div>
+        <nav class="header-nav">
+            <a href="#/process" class="nav-link active" data-page="process">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
+                Process
+            </a>
+            <a href="#/search" class="nav-link" data-page="search">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                Search
+            </a>
+            <a href="#/export" class="nav-link" data-page="export">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Export
+            </a>
+            <a href="#/deal" class="nav-link" data-page="deal">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+                Deal Assessment
+            </a>
+            <a href="#/log" class="nav-link" data-page="log">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10,9 9,9 8,9"/></svg>
+                Log
+            </a>
+        </nav>
+        <div class="header-right">
+            <span class="db-info" id="dbInfo">Loading...</span>
+            <button class="theme-toggle" id="themeToggle" title="Toggle dark/light mode">
+                <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="app-content" id="appContent">
+        <!-- Loading state shown while sql.js + pdf.js initialize -->
+        <div class="app-loading" id="appLoading">
+            <span class="spinner"></span>
+            <span>Initializing CIB Analyzer...</span>
+        </div>
+
+        <!-- Process Page -->
+        <div class="page-container" id="page-process">
+            <div class="process-page">
+                <div class="section-header">Add CIB Reports</div>
+                <div class="drop-zone" id="dropZone">
+                    <h3>Drag &amp; Drop PDF files here</h3>
+                    <p>Accepts CIB report PDFs from Bangladesh Bank</p>
+                    <div>&mdash; or &mdash;</div>
+                    <button class="btn btn-primary mt-2" onclick="document.getElementById('fileInput').click()">Select Files</button>
+                    <input type="file" id="fileInput" multiple accept=".pdf" style="display:none">
+                </div>
+
+                <div class="section-header">
+                    <span>Selected Files</span>
+                    <span class="text-muted text-sm" id="fileCount" style="margin-left:auto">0 file(s) selected</span>
+                </div>
+                <div class="file-list" id="fileList"></div>
+
+                <div class="progress-container" id="progressContainer">
+                    <div class="progress-bar-track">
+                        <div class="progress-bar-fill" id="progressFill"></div>
+                    </div>
+                    <div class="progress-text" id="progressText"></div>
+                </div>
+
+                <div class="action-buttons">
+                    <button class="btn btn-success btn-lg" id="processBtn" disabled>Start Processing</button>
+                    <button class="btn btn-danger" id="cancelBtn" disabled style="display:none">Cancel</button>
+                </div>
+
+                <div class="section-header">Processing Log</div>
+                <div class="process-log" id="processLog">Ready. Upload PDF files to begin.</div>
+            </div>
+        </div>
+
+        <!-- Search Page -->
+        <div class="page-container" id="page-search">
+            <div class="search-page">
+                <div class="search-left">
+                    <div class="search-bar">
+                        <input type="text" class="form-input" id="searchInput"
+                               placeholder="Search by Name, NID, CIB Subject Code...">
+                    </div>
+                    <div class="results-header" id="resultsHeader">ALL SUBJECTS</div>
+                    <div class="results-list" id="resultsList">
+                        <div class="p-3 text-muted text-center">Loading...</div>
+                    </div>
+                </div>
+                <div class="search-right" id="detailArea">
+                    <div class="detail-placeholder">Select a subject from the list</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Export Page -->
+        <div class="page-container" id="page-export">
+            <div class="export-page">
+                <div class="export-left">
+                    <div class="export-type-card selected" data-type="master">
+                        <div class="et-title">Master Excel</div>
+                        <div class="et-desc">Full portfolio workbook with all subjects</div>
+                    </div>
+                    <div class="export-type-card" data-type="individual">
+                        <div class="et-title">Individual Report</div>
+                        <div class="et-desc">Detailed Excel for a single subject</div>
+                    </div>
+                    <div class="export-type-card" data-type="memo">
+                        <div class="et-title">Credit Memo</div>
+                        <div class="et-desc">Formatted credit assessment memo</div>
+                    </div>
+                    <div class="export-type-card" data-type="csv">
+                        <div class="et-title">CSV Export</div>
+                        <div class="et-desc">CSV files for all database tables</div>
+                    </div>
+                    <div class="export-type-card" data-type="database">
+                        <div class="et-title">Database Backup</div>
+                        <div class="et-desc">Download or import the database file</div>
+                    </div>
+                </div>
+                <div class="export-right">
+                    <div class="export-panel active" data-type="master">
+                        <h2>Master Excel Export</h2>
+                        <div class="summary-card mb-3" id="masterStats">
+                            <div class="stat-card">
+                                <div class="stat-value" id="masterSubjects">-</div>
+                                <div class="stat-label">Total Subjects</div>
+                            </div>
+                            <div class="stat-card" style="border-left-color:var(--danger)">
+                                <div class="stat-value" id="masterAdverse">-</div>
+                                <div class="stat-label">Adverse / High Risk</div>
+                            </div>
+                        </div>
+                        <p class="text-muted mb-3">Generates a comprehensive Excel workbook with summary, subject details, facility matrix, contracts, history, and linked parties sheets.</p>
+                        <button class="btn btn-primary btn-lg" id="exportMasterBtn">Export Master Excel</button>
+                    </div>
+                    <div class="export-panel" data-type="individual">
+                        <h2>Individual Report</h2>
+                        <div class="form-group">
+                            <label class="form-label">Search Subject</label>
+                            <input type="text" class="form-input" id="indSearchInput" placeholder="Search by name or CIB code...">
+                        </div>
+                        <div id="indResults" class="dropdown-results"></div>
+                        <button class="btn btn-primary" id="exportIndBtn">Export Individual Report</button>
+                    </div>
+                    <div class="export-panel" data-type="memo">
+                        <h2>Credit Memo</h2>
+                        <p class="text-muted mb-3">Generates a formatted credit assessment memo for the selected subject.</p>
+                        <div class="form-group">
+                            <label class="form-label">Search Subject</label>
+                            <input type="text" class="form-input" id="memoSearchInput" placeholder="Search by name or CIB code...">
+                        </div>
+                        <div id="memoResults" class="dropdown-results"></div>
+                        <button class="btn btn-primary" id="exportMemoBtn">Export Credit Memo</button>
+                    </div>
+                    <div class="export-panel" data-type="csv">
+                        <h2>CSV Export</h2>
+                        <p class="text-muted mb-3">Exports all database tables as separate CSV files.</p>
+                        <button class="btn btn-primary" id="exportCsvBtn">Export CSV Files</button>
+                    </div>
+                    <div class="export-panel" data-type="database">
+                        <h2>Database Management</h2>
+                        <p class="text-muted mb-3">Your database lives entirely in this browser. Download it to save a backup, or import a previous backup.</p>
+                        <div class="db-actions">
+                            <button class="btn btn-primary" id="exportDbBtn">Download Database</button>
+                            <button class="btn btn-outline" id="importDbBtn">Import Database</button>
+                            <input type="file" id="importDbInput" accept=".db,.sqlite" style="display:none">
+                        </div>
+                        <div class="db-actions mt-2">
+                            <button class="btn btn-danger btn-sm" id="clearDbBtn">Clear All Data</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Deal Assessment Page -->
+        <div class="page-container" id="page-deal">
+            <div class="deal-page">
+                <div class="section-header">Applicant</div>
+                <div class="card p-3 mb-3">
+                    <div class="form-group">
+                        <label class="form-label">Search Applicant</label>
+                        <input type="text" class="form-input" id="dealSearchInput" placeholder="Search by name or CIB code...">
+                    </div>
+                    <div id="dealResults" class="dropdown-results"></div>
+                    <div id="dealApplicant"></div>
+                </div>
+
+                <div class="section-header">Income &amp; Existing Obligations</div>
+                <div class="card p-3 mb-3">
+                    <div class="deal-form-grid">
+                        <div class="form-group">
+                            <label class="form-label">Monthly Income (&#x09F3;)</label>
+                            <input type="number" class="form-input" id="monthlyIncome" placeholder="0">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Existing EMI from CIB (&#x09F3;)</label>
+                            <input type="number" class="form-input" id="existingEmi" placeholder="Auto-filled from CIB" readonly>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Additional Obligations (&#x09F3;)</label>
+                            <input type="number" class="form-input" id="additionalObligations" placeholder="0">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section-header">Proposed Deal Scenarios</div>
+                <div class="card p-3 mb-3">
+                    <div class="scenario-tabs mb-3">
+                        <button class="scenario-tab active" data-scenario="1">Scenario 1</button>
+                        <button class="scenario-tab" data-scenario="2">Scenario 2</button>
+                        <button class="scenario-tab" data-scenario="3">Scenario 3</button>
+                    </div>
+                    <div class="scenario-panel active" data-scenario="1">
+                        <div class="deal-form-grid">
+                            <div class="form-group"><label class="form-label">Sanction Amount (&#x09F3;)</label><input type="number" class="form-input" id="sanction1" placeholder="0"></div>
+                            <div class="form-group"><label class="form-label">Tenure (months)</label><input type="number" class="form-input" id="tenure1" placeholder="0"></div>
+                            <div class="form-group"><label class="form-label">Interest Rate (%)</label><input type="number" class="form-input" id="rate1" step="0.01" placeholder="0"></div>
+                            <div class="form-group"><label class="form-label">Moratorium (months)</label><input type="number" class="form-input" id="moratorium1" placeholder="0"></div>
+                        </div>
+                    </div>
+                    <div class="scenario-panel" data-scenario="2">
+                        <div class="deal-form-grid">
+                            <div class="form-group"><label class="form-label">Sanction Amount (&#x09F3;)</label><input type="number" class="form-input" id="sanction2" placeholder="0"></div>
+                            <div class="form-group"><label class="form-label">Tenure (months)</label><input type="number" class="form-input" id="tenure2" placeholder="0"></div>
+                            <div class="form-group"><label class="form-label">Interest Rate (%)</label><input type="number" class="form-input" id="rate2" step="0.01" placeholder="0"></div>
+                            <div class="form-group"><label class="form-label">Moratorium (months)</label><input type="number" class="form-input" id="moratorium2" placeholder="0"></div>
+                        </div>
+                    </div>
+                    <div class="scenario-panel" data-scenario="3">
+                        <div class="deal-form-grid">
+                            <div class="form-group"><label class="form-label">Sanction Amount (&#x09F3;)</label><input type="number" class="form-input" id="sanction3" placeholder="0"></div>
+                            <div class="form-group"><label class="form-label">Tenure (months)</label><input type="number" class="form-input" id="tenure3" placeholder="0"></div>
+                            <div class="form-group"><label class="form-label">Interest Rate (%)</label><input type="number" class="form-input" id="rate3" step="0.01" placeholder="0"></div>
+                            <div class="form-group"><label class="form-label">Moratorium (months)</label><input type="number" class="form-input" id="moratorium3" placeholder="0"></div>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary btn-lg mt-3" id="calculateDscrBtn">Calculate DSCR</button>
+                </div>
+
+                <div id="dscrResults"></div>
+
+                <div class="section-header">Connected Parties</div>
+                <div id="connectedParties" class="mb-3">
+                    <span class="text-muted p-3">Select an applicant to view connected parties</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Log Page -->
+        <div class="page-container" id="page-log">
+            <div class="log-page">
+                <div class="log-filters">
+                    <label>Status:</label>
+                    <select class="form-select" id="logStatusFilter">
+                        <option>All</option>
+                        <option>Success</option>
+                        <option>Error</option>
+                        <option>Duplicate</option>
+                        <option>Skipped</option>
+                    </select>
+                    <label>Date:</label>
+                    <select class="form-select" id="logDateFilter">
+                        <option>All Time</option>
+                        <option>Today</option>
+                        <option>Last 7 Days</option>
+                        <option>Last 30 Days</option>
+                    </select>
+                    <input type="text" class="form-input" id="logSearchInput" placeholder="Search filename, name, code..." style="max-width:250px">
+                    <button class="btn btn-primary btn-sm" id="logRefreshBtn">Refresh</button>
+                </div>
+                <div class="log-table-wrapper">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Status</th>
+                                <th>Filename</th>
+                                <th>Subject</th>
+                                <th>CIB Code</th>
+                                <th class="text-right">Duration</th>
+                                <th class="text-center">Contracts</th>
+                            </tr>
+                        </thead>
+                        <tbody id="logTableBody">
+                            <tr><td colspan="7" class="text-center text-muted p-4">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="log-summary" id="logSummary">Loading...</div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Toast container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- External libraries (UMD builds for global availability) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.mjs" type="module"></script>
+    <script type="module">
+        // Re-export pdf.js as global for our modules
+        import * as pdfjsModule from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.mjs';
+        window.pdfjsLib = pdfjsModule;
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs';
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+
+    <!-- App -->
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
