@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS contracts (
     cib_contract_code       TEXT NOT NULL,
     cib_subject_code        TEXT NOT NULL,
     inquiry_id              INTEGER,
+    fi_code                 TEXT DEFAULT '',
     contract_subtype        TEXT DEFAULT 'standard',
     facility_category       TEXT,
     role                    TEXT,

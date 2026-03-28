@@ -1558,10 +1558,11 @@ function parseSingleContract(blockLines, isInstallment) {
         facility_category: isInstallment ? 'Installment' : 'Non-Installment'
     };
 
-    // --- CIB Contract Code ---
-    // The code may be on its own line OR embedded in the tabular data row:
-    //   "1 (CIB Subject 215 0001 B0130024728 1277201574976347"
-    // We search for a CIB code pattern anywhere in the first 15 lines.
+    // --- CIB Contract Code + FI Code ---
+    // The data row in contract headers looks like:
+    //   "1 (CIB Subject 215 0001 B0010162492 1277201574976347"
+    // Tokens after "(CIB Subject": FI_code, branch_code, CIB_contract_code, FI_contract_code
+    // For masked: "1 (CIB Subject ### ### B0130024728 ###"
     for (let idx = 0; idx < Math.min(15, blockLines.length); idx++) {
         const codeLine = blockLines[idx].trim();
         // Exact match (code is the entire line)
@@ -1569,11 +1570,24 @@ function parseSingleContract(blockLines, isInstallment) {
             contract.cib_contract_code = codeLine;
             break;
         }
-        // CIB contract code embedded in a multi-value line (tabular row)
+        // Parse the tabular data row: extract FI code and CIB contract code
+        const dataRowMatch = codeLine.match(/\(CIB Subject\s+(\S+)\s+(\S+)\s+(\S+)/);
+        if (dataRowMatch) {
+            const fiCode = dataRowMatch[1];
+            const cibContract = dataRowMatch[3];
+            // FI code (numeric, not masked)
+            if (/^\d+$/.test(fiCode)) {
+                contract.fi_code = fiCode;
+            }
+            // CIB contract code
+            if (RE_CIB_CODE.test(cibContract)) {
+                contract.cib_contract_code = cibContract;
+            }
+            break;
+        }
+        // CIB contract code embedded in a multi-value line (without "(CIB Subject" pattern)
         const embeddedMatch = codeLine.match(/\b([A-Z]\d{9,})\b/);
-        if (embeddedMatch && !codeLine.startsWith('CIB Subject') && !codeLine.includes('CIB Subject Code:')) {
-            // Prefer the code that looks like a contract code (starts with B, C, D, etc.)
-            // Skip subject codes (start with F) if another code is present
+        if (embeddedMatch && !codeLine.includes('CIB Subject Code:')) {
             const allCodes = [...codeLine.matchAll(/\b([A-Z]\d{9,})\b/g)].map(m => m[1]);
             const contractCode = allCodes.find(c => !c.startsWith('F')) || allCodes[0];
             if (contractCode) {

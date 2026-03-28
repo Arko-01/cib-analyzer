@@ -556,7 +556,7 @@ function renderSubjectDetail(data, detailArea) {
             ${renderProfile(data, contracts, summaries, alerts, matched)}
         </div>
         <div class="tab-content" data-tab="tab-facilities" id="tab-facilities">
-            ${renderFacilities(contracts)}
+            ${renderFacilities(contracts, data.inquiries || [])}
         </div>
         <div class="tab-content" data-tab="tab-relationships" id="tab-relationships">
             ${renderRelationships(relationships)}
@@ -709,8 +709,16 @@ function renderAlertSummary(contracts, alerts) {
 }
 
 // ── Facilities ──
-function renderFacilities(contracts) {
+function renderFacilities(contracts, inquiries = []) {
     if (!contracts.length) return '<div class="p-4 text-muted">No contracts found</div>';
+
+    // Build FI code → name map from inquiries
+    const fiNameMap = {};
+    for (const inq of inquiries) {
+        if (inq.inquiry_fi_code && inq.inquiry_fi_name) {
+            fiNameMap[inq.inquiry_fi_code] = inq.inquiry_fi_name;
+        }
+    }
 
     const living = contracts.filter(c => (c.phase || '').toLowerCase() === 'living');
     const terminated = contracts.filter(c => (c.phase || '').toLowerCase() !== 'living');
@@ -734,11 +742,17 @@ function renderFacilities(contracts) {
         const bandCls = isLiving ? 'living' : 'terminated';
         const phaseLabel = isLiving ? 'Living' : 'Terminated';
 
+        // Build facility label: "Bank Name · CIB Code · Facility Type" or "CIB Code · Facility Type"
+        const fiName = c.fi_code ? (fiNameMap[c.fi_code] || `FI-${c.fi_code}`) : '';
+        const cibCode = c.cib_contract_code || '';
+        const facilityType = c.facility_type || '';
+        const labelParts = [fiName, cibCode, facilityType].filter(Boolean);
+        const facilityLabel = labelParts.join(' &middot; ');
+
         html += `<div class="facility-card">
             <div class="facility-band ${bandCls}">
                 <span class="badge ${isLiving ? 'badge-success' : 'badge-muted'}">${phaseLabel}</span>
-                <strong>${escapeHtml(c.cib_contract_code || '—')}</strong>
-                <span>${escapeHtml(c.facility_type || '')}</span>
+                <strong>${facilityLabel}</strong>
                 <span>${escapeHtml(c.role || '')}</span>
                 <span class="band-amount">${formatTaka(c.remaining_amount || 0)}</span>
             </div>

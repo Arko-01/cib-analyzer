@@ -173,16 +173,49 @@ class CIBDatabase {
     }
 
     _migrateContractsUnique() {
-        // Check if the old UNIQUE constraint exists by inspecting table SQL
         const tableInfo = queryOne(this.db,
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='contracts'", []);
-        if (!tableInfo || !tableInfo.sql || !tableInfo.sql.includes('UNIQUE(cib_contract_code')) return;
+        if (!tableInfo || !tableInfo.sql) return;
 
-        // Recreate contracts table without the UNIQUE constraint
-        this.db.run("ALTER TABLE contracts RENAME TO contracts_old");
-        this.db.run(TABLES_SQL); // Creates new contracts table without UNIQUE
-        this.db.run(`INSERT INTO contracts SELECT * FROM contracts_old`);
-        this.db.run("DROP TABLE contracts_old");
+        const needsUniqueRemoval = tableInfo.sql.includes('UNIQUE(cib_contract_code');
+        const needsFiCode = !tableInfo.sql.includes('fi_code');
+
+        if (!needsUniqueRemoval && !needsFiCode) return;
+
+        if (needsFiCode && !needsUniqueRemoval) {
+            // Just add the missing column
+            this.db.run("ALTER TABLE contracts ADD COLUMN fi_code TEXT DEFAULT ''");
+        } else {
+            // Need to recreate table (can't drop UNIQUE with ALTER)
+            this.db.run("ALTER TABLE contracts RENAME TO contracts_old");
+            this.db.run(TABLES_SQL);
+            // Copy data — old table lacks fi_code, so list columns explicitly
+            const oldCols = tableInfo.sql.match(/\([\s\S]+\)/)[0];
+            const hasOldFiCode = oldCols.includes('fi_code');
+            const baseCols = `id, cib_contract_code, cib_subject_code, inquiry_id,
+                contract_subtype, facility_category, role, phase,
+                facility_type, last_update, start_date, end_date,
+                sanction_limit, total_disbursement,
+                installment_amount, total_installments,
+                remaining_count, remaining_amount,
+                payment_method, periodicity,
+                security_amount, security_type, third_party_guarantee,
+                reorganized_credit, times_rescheduled,
+                classification_date, last_payment_date,
+                rescheduling_date, lawsuit_date, subsidized_credit,
+                stay_order_flag,
+                worst_ever_classification, max_overdue_amount, max_npi,
+                ever_overdue, months_in_overdue, classification_trend,
+                last_classification_date, on_time_payment_rate,
+                overdue_streak_max, outstanding_trend, contract_risk,
+                source_file, updated_at`;
+            if (hasOldFiCode) {
+                this.db.run(`INSERT INTO contracts (${baseCols}, fi_code) SELECT ${baseCols}, fi_code FROM contracts_old`);
+            } else {
+                this.db.run(`INSERT INTO contracts (${baseCols}) SELECT ${baseCols} FROM contracts_old`);
+            }
+            this.db.run("DROP TABLE contracts_old");
+        }
     }
 
     _seedMetadata() {
@@ -469,7 +502,7 @@ class CIBDatabase {
             const contractCode = c.cib_contract_code || '###';
             this.db.run(`
                 INSERT INTO contracts (
-                    cib_contract_code, cib_subject_code, inquiry_id,
+                    cib_contract_code, cib_subject_code, inquiry_id, fi_code,
                     contract_subtype, facility_category, role, phase,
                     facility_type, last_update, start_date, end_date,
                     sanction_limit, total_disbursement,
@@ -481,11 +514,12 @@ class CIBDatabase {
                     classification_date, last_payment_date,
                     rescheduling_date, lawsuit_date, subsidized_credit,
                     stay_order_flag, source_file, updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             `, [
                 contractCode,
                 c.cib_subject_code || cibCode,
                 inquiryId,
+                c.fi_code || '',
                 c.contract_subtype || 'standard',
                 c.facility_category || '',
                 c.role || '',
