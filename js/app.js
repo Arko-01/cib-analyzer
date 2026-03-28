@@ -737,7 +737,7 @@ function renderFacilities(contracts) {
         html += `<div class="facility-card">
             <div class="facility-band ${bandCls}">
                 <span class="badge ${isLiving ? 'badge-success' : 'badge-muted'}">${phaseLabel}</span>
-                <strong>${c.cib_contract_code === '###' ? '<span class="text-muted">Masked</span>' : escapeHtml(c.cib_contract_code || '')}</strong>
+                <strong>${escapeHtml(c.cib_contract_code || '—')}</strong>
                 <span>${escapeHtml(c.facility_type || '')}</span>
                 <span>${escapeHtml(c.role || '')}</span>
                 <span class="band-amount">${formatTaka(c.remaining_amount || 0)}</span>

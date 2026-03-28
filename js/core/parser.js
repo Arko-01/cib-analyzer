@@ -1559,13 +1559,29 @@ function parseSingleContract(blockLines, isInstallment) {
     };
 
     // --- CIB Contract Code ---
+    // The code may be on its own line OR embedded in the tabular data row:
+    //   "1 (CIB Subject 215 0001 B0130024728 1277201574976347"
+    // We search for a CIB code pattern anywhere in the first 15 lines.
     for (let idx = 0; idx < Math.min(15, blockLines.length); idx++) {
         const codeLine = blockLines[idx].trim();
+        // Exact match (code is the entire line)
         if (RE_CIB_CODE.test(codeLine)) {
             contract.cib_contract_code = codeLine;
             break;
         }
-        // Handle masked contract codes from other banks (appear as "###", "# # #", etc.)
+        // CIB contract code embedded in a multi-value line (tabular row)
+        const embeddedMatch = codeLine.match(/\b([A-Z]\d{9,})\b/);
+        if (embeddedMatch && !codeLine.startsWith('CIB Subject') && !codeLine.includes('CIB Subject Code:')) {
+            // Prefer the code that looks like a contract code (starts with B, C, D, etc.)
+            // Skip subject codes (start with F) if another code is present
+            const allCodes = [...codeLine.matchAll(/\b([A-Z]\d{9,})\b/g)].map(m => m[1]);
+            const contractCode = allCodes.find(c => !c.startsWith('F')) || allCodes[0];
+            if (contractCode) {
+                contract.cib_contract_code = contractCode;
+                break;
+            }
+        }
+        // Handle masked contract codes (appear as "###", "# # #", etc.)
         if (/^[#\s]+$/.test(codeLine) && codeLine.includes('#')) {
             contract.cib_contract_code = '###';
             break;
