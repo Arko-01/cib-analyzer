@@ -1769,8 +1769,10 @@ function parseSingleContract(blockLines, isInstallment) {
                 val = getValueAfter(blockLines, i);
             }
             // Strip trailing inline fields
-            val = stripTrailingField(val, ['Date of last', 'Date of classification', 'Date Default', 'Date Willful', 'Willful Default', 'Accounting', 'Monthly']);
+            val = stripTrailingField(val, ['Date of last', 'Date of classification', 'Date Default', 'Date Willful', 'Date of Law', 'Willful Default', 'Willful', 'Accounting', 'Monthly']);
             // May span multiple lines (e.g., "Hire-Purchase under" + "shirkatul Meelk")
+            // But skip short stray tokens like "WD", "(WD)", "(Appeal)", status codes
+            const STRAY_TOKENS = /^(WD|\(WD\)|\(Appeal\)|STD|SMA|SS|DF|BL|BLW|No|Yes|Default)$/i;
             if (val) {
                 let j = i + 1;
                 while (j < Math.min(i + 4, blockLines.length)) {
@@ -1778,6 +1780,10 @@ function parseSingleContract(blockLines, isInstallment) {
                     if (ns && ns === val) {
                         j++;
                         continue;
+                    }
+                    // Skip stray classification/status tokens
+                    if (STRAY_TOKENS.test(ns)) {
+                        break;
                     }
                     // Continue appending if line doesn't look like a metadata label or data
                     if (ns && !ns.startsWith('Date') && !ns.startsWith('Starting') &&
@@ -1990,6 +1996,26 @@ function parseSingleContract(blockLines, isInstallment) {
         }
         // Strip any trailing metadata that leaked into phase (e.g., "Living Date of Last Update: ...")
         contract.phase = stripTrailingField(contract.phase, ['Date of Last', 'Date of Law', 'Monthly History']);
+    }
+
+    // --- Post-processing: clean facility_type ---
+    if (contract.facility_type) {
+        // Strip trailing metadata that leaked into facility type
+        contract.facility_type = stripTrailingField(contract.facility_type,
+            ['Date of last', 'Date of classification', 'Date Default', 'Date Willful',
+             'Willful Default', 'Willful', 'Date of Law', 'Accounting', 'Monthly']);
+        // Remove trailing stray tokens like "WD", "(WD)", status codes
+        contract.facility_type = contract.facility_type
+            .replace(/\s+(WD|\(WD\)|\(Appeal\)|STD|SMA|SS|DF|BL|BLW)\s*$/i, '')
+            .trim();
+        // Fix common truncation: "Term" alone should be "Term Loan"
+        if (contract.facility_type === 'Term') {
+            contract.facility_type = 'Term Loan';
+        }
+        // Fix "Hire-Purchase under" without continuation
+        if (contract.facility_type === 'Hire-Purchase under') {
+            contract.facility_type = 'Hire-Purchase';
+        }
     }
 
     // --- Post-processing: set outstanding from most recent history entry ---

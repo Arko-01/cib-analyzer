@@ -373,7 +373,7 @@ function initProcessPage() {
                             sourceFile: file.name,
                             fileHash,
                             cibCode: cibCode || '',
-                            name: report.subject?.name || '',
+                            name: report.subject?.name || report.subject?.trade_name || '',
                             status: replaced ? 'REPLACED' : 'SUCCESS',
                             duration: parseFloat(duration),
                             contracts: (report.contracts || []).length,
@@ -423,6 +423,7 @@ function initProcessPage() {
 
             processBtn.disabled = false;
             cancelBtn.disabled = true;
+            cancelBtn.style.display = 'none';
             selectedFiles = [];
             renderFileList();
             await loadDbInfo();
@@ -792,9 +793,9 @@ function renderRelationships(relationships) {
 
     let html = '<div class="p-3">';
     for (const r of relationships) {
-        const name = r.related_name || r.related_subject_code || 'Unknown';
-        const code = r.related_subject_code || '';
-        const role = r.relationship_type || '';
+        const name = r.name || r.related_name || r.cib_subject_code || r.related_subject_code || 'Unknown';
+        const code = r.cib_subject_code || r.related_subject_code || '';
+        const role = r.role || r.relationship_type || '';
         const cls = r.worst_classification || '';
 
         html += `<div class="rel-card">
@@ -828,7 +829,8 @@ function renderHistory(contracts) {
         html += '<th>Month</th><th>Classification</th><th class="text-right">Outstanding</th>';
         html += '<th class="text-right">Overdue</th><th>NPI</th><th>WD</th></tr></thead><tbody>';
 
-        const sorted = [...history].sort((a, b) => (b.accounting_date || '').localeCompare(a.accounting_date || ''));
+        const parseDate = (d) => { const p = (d || '').split('/'); return p.length === 3 ? `${p[2]}${p[1]}${p[0]}` : d || ''; };
+        const sorted = [...history].sort((a, b) => parseDate(b.accounting_date).localeCompare(parseDate(a.accounting_date)));
         for (const h of sorted) {
             const cls = h.status || '';
             const overdue = parseFloat(h.overdue) || 0;
