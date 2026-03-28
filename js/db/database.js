@@ -161,11 +161,28 @@ class CIBDatabase {
         this.db.run(TABLES_SQL);
         this.db.run(INDEX_SQL);
 
+        // Migration: remove UNIQUE(cib_contract_code, cib_subject_code) from contracts
+        // This constraint caused INSERT OR REPLACE to overwrite masked (###) contracts
+        this._migrateContractsUnique();
+
         // Drop and recreate views (they're cheap)
         for (const viewName of ['v_exposure_summary', 'v_relationship_risk', 'v_portfolio_dashboard']) {
             this.db.run(`DROP VIEW IF EXISTS ${viewName}`);
         }
         this.db.run(VIEWS_SQL);
+    }
+
+    _migrateContractsUnique() {
+        // Check if the old UNIQUE constraint exists by inspecting table SQL
+        const tableInfo = queryOne(this.db,
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='contracts'", []);
+        if (!tableInfo || !tableInfo.sql || !tableInfo.sql.includes('UNIQUE(cib_contract_code')) return;
+
+        // Recreate contracts table without the UNIQUE constraint
+        this.db.run("ALTER TABLE contracts RENAME TO contracts_old");
+        this.db.run(TABLES_SQL); // Creates new contracts table without UNIQUE
+        this.db.run(`INSERT INTO contracts SELECT * FROM contracts_old`);
+        this.db.run("DROP TABLE contracts_old");
     }
 
     _seedMetadata() {
@@ -451,7 +468,7 @@ class CIBDatabase {
         for (const c of contracts) {
             const contractCode = c.cib_contract_code || 'UNKNOWN';
             this.db.run(`
-                INSERT OR REPLACE INTO contracts (
+                INSERT INTO contracts (
                     cib_contract_code, cib_subject_code, inquiry_id,
                     contract_subtype, facility_category, role, phase,
                     facility_type, last_update, start_date, end_date,

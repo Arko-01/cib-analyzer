@@ -187,7 +187,6 @@ CREATE TABLE IF NOT EXISTS contracts (
     -- Source
     source_file             TEXT,
     updated_at              TEXT DEFAULT (datetime('now','localtime')),
-    UNIQUE(cib_contract_code, cib_subject_code),
     FOREIGN KEY (inquiry_id) REFERENCES inquiries(id) ON DELETE SET NULL
 );
 
