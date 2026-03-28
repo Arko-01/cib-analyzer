@@ -573,15 +573,16 @@ function renderSubjectDetail(data, detailArea) {
 function renderProfile(data, contracts, summaries, alerts, matched) {
     let html = '';
 
-    // Role cards
+    // Role cards — compute living/terminated from actual contracts per role
     if (summaries.length) {
         html += '<div class="role-cards">';
         for (const s of summaries) {
             const role = s.role || '';
             const outstanding = s.bb_total_outstanding || 0;
             const overdue = s.bb_total_overdue || 0;
-            const living = s.bb_living_contracts || 0;
-            const terminated = s.bb_terminated_count || 0;
+            const roleContracts = contracts.filter(c => (c.role || '').toLowerCase() === role.toLowerCase());
+            const living = roleContracts.filter(c => (c.phase || '').toLowerCase() === 'living').length;
+            const terminated = roleContracts.filter(c => (c.phase || '').toLowerCase() !== 'living').length;
             html += `
                 <div class="role-card">
                     <div class="flex justify-between items-center">

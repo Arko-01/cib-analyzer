@@ -1,27 +1,29 @@
 /**
  * CIB Analyzer — Excel Exporter (SheetJS / xlsx-js-style)
  * ========================================================
- * Exports parsed CIB data to a professionally formatted .xlsx workbook
- * with 8 sheets:
+ * Exports parsed CIB data to professionally formatted .xlsx workbooks.
  *
- *   1. Summary         — Key metrics, risk flags, classification overview
- *   2. Subject Info     — Personal / company identity details
- *   3. Facility Matrix  — Funded facility classification matrix (1A/2A)
- *   4. Non-Funded       — Non-funded facility summary (1B/2B)
- *   5. Contract Details — All contracts with key fields
- *   6. Monthly History  — Full monthly history for all contracts
- *   7. Linked Parties   — Owners, proprietorships, linked subjects
- *   8. Processing Info  — Extraction metadata, warnings, inquiry details
+ * Two export modes share the same 10-sheet template:
+ *   - Master Export: all subjects aggregated
+ *   - Individual Report: single subject
  *
- * Can export:
- *   - A single report (from parser output dict)
- *   - A batch of subjects (from database query results)
+ * Sheets:
+ *   1. Subjects           — Identity, demographics, addresses
+ *   2. Summary Snapshots  — BB-reported totals per role
+ *   3. Classification Matrix — Funded facility breakdown
+ *   4. Non-Funded          — GU/LC/OF facility summary
+ *   5. Contracts           — All contracts with full metadata
+ *   6. Monthly History     — Time series per contract
+ *   7. Linked Subjects     — Borrower/Guarantor per contract
+ *   8. Owners & Directors  — Company ownership
+ *   9. Proprietorships     — Sole proprietorship linkages
+ *  10. Dashboard Summary   — Portfolio overview with key metrics
  */
 
 import {
   HEADER_BG_COLOR, HEADER_FONT_COLOR, TITLE_BG_COLOR, TITLE_FONT_COLOR,
   SECTION_BG_COLOR, ALERT_BG_COLOR, GREEN_BG_COLOR, AMBER_BG_COLOR,
-  AMOUNT_FORMAT, DATE_FORMAT, ADVERSE_CLASSIFICATIONS, CLASSIFICATION_ORDER,
+  AMOUNT_FORMAT, ADVERSE_CLASSIFICATIONS,
   APP_NAME, APP_VERSION,
 } from '../config.js';
 
@@ -52,21 +54,17 @@ const _GREEN_FILL = { patternType: 'solid', fgColor: { rgb: GREEN_BG_COLOR } };
 const _AMBER_FILL = { patternType: 'solid', fgColor: { rgb: AMBER_BG_COLOR } };
 const _NORMAL_FONT = { name: 'Arial', sz: 10 };
 const _BOLD_FONT = { name: 'Arial', bold: true, sz: 10 };
+const _ALT_FILL = { patternType: 'solid', fgColor: { rgb: 'F2F6FC' } };
 
 const _THIN_BORDER = {
-  top:    { style: 'thin' },
-  bottom: { style: 'thin' },
-  left:   { style: 'thin' },
-  right:  { style: 'thin' },
+  top:    { style: 'thin', color: { rgb: 'D0D0D0' } },
+  bottom: { style: 'thin', color: { rgb: 'D0D0D0' } },
+  left:   { style: 'thin', color: { rgb: 'D0D0D0' } },
+  right:  { style: 'thin', color: { rgb: 'D0D0D0' } },
 };
 
 const _CENTER = { horizontal: 'center', vertical: 'center', wrapText: true };
-const _LEFT_WRAP = { horizontal: 'left', vertical: 'top', wrapText: true };
 
-/**
- * Encode a (row, col) pair into an Excel cell address like "A1".
- * row and col are 0-based.
- */
 function cellRef(r, c) {
   return XLSX.utils.encode_cell({ r, c });
 }
@@ -74,7 +72,6 @@ function cellRef(r, c) {
 function setCell(ws, r, c, value, style) {
   const ref = cellRef(r, c);
   ws[ref] = { v: value, t: typeof value === 'number' ? 'n' : 's', s: style || {} };
-  // Expand range
   const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
   if (r > range.e.r) range.e.r = r;
   if (c > range.e.c) range.e.c = c;
@@ -89,41 +86,12 @@ function initSheet() {
   return ws;
 }
 
-function styleHeaderRow(ws, row, maxCol) {
-  for (let c = 0; c < maxCol; c++) {
-    const ref = cellRef(row, c);
-    if (!ws[ref]) ws[ref] = { v: '', t: 's' };
-    ws[ref].s = {
-      font: _HEADER_FONT,
-      fill: _HEADER_FILL,
-      alignment: _CENTER,
-      border: _THIN_BORDER,
-    };
-  }
-}
-
-function styleCell(ws, r, c, { isAmount = false, isAlert = false, isGreen = false, isAmber = false } = {}) {
-  const ref = cellRef(r, c);
-  if (!ws[ref]) return;
-  const s = { font: _NORMAL_FONT, border: _THIN_BORDER };
-  if (isAmount) {
-    s.numFmt = AMOUNT_FORMAT;
-    s.alignment = { horizontal: 'right' };
-    ws[ref].t = 'n';
-    if (ws[ref].v === '' || ws[ref].v === null || ws[ref].v === undefined) ws[ref].v = 0;
-  }
-  if (isAlert)      s.fill = _ALERT_FILL;
-  else if (isGreen) s.fill = _GREEN_FILL;
-  else if (isAmber) s.fill = _AMBER_FILL;
-  ws[ref].s = s;
-}
-
 function autoWidth(ws, minWidth = 10, maxWidth = 45) {
   const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
   const cols = [];
   for (let c = range.s.c; c <= range.e.c; c++) {
     let best = minWidth;
-    for (let r = range.s.r; r <= range.e.r; r++) {
+    for (let r = range.s.r; r <= Math.min(range.e.r, 100); r++) {
       const cell = ws[cellRef(r, c)];
       if (cell && cell.v != null) {
         best = Math.max(best, Math.min(String(cell.v).length + 2, maxWidth));
@@ -134,688 +102,440 @@ function autoWidth(ws, minWidth = 10, maxWidth = 45) {
   ws['!cols'] = cols;
 }
 
-function writeTitle(ws, title, row = 0, colSpan = 8) {
-  setCell(ws, row, 0, title, {
-    font: _TITLE_FONT,
-    fill: _TITLE_FILL,
-    alignment: _CENTER,
-  });
-  ws['!merges'].push({ s: { r: row, c: 0 }, e: { r: row, c: colSpan - 1 } });
-}
+/**
+ * Write a data table to a worksheet with headers, alternating row fills, and formatting.
+ */
+function writeTable(ws, headers, rows, { startRow = 0, amountCols = [], dateCols = [] } = {}) {
+  const amountSet = new Set(amountCols);
+  const dateSet = new Set(dateCols);
 
-function writeSection(ws, label, row, colSpan = 8) {
-  setCell(ws, row, 0, label, {
-    font: _SECTION_FONT,
-    fill: _SECTION_FILL,
-  });
-  ws['!merges'].push({ s: { r: row, c: 0 }, e: { r: row, c: colSpan - 1 } });
-}
-
-// ─────────────────────────── Sheet 1: Summary ────────────────────
-
-function writeSummarySheet(wb, report) {
-  const ws = initSheet();
-  const subj = report.subject || {};
-  const sb = report.summary_borrower || {};
-  const sg = report.summary_guarantor || {};
-  const met = report.metrics || {};
-  const match = report.match_status || {};
-
-  const name = subj.name || subj.trade_name || 'N/A';
-  const cibCode = subj.cib_subject_code || 'N/A';
-
-  writeTitle(ws, `CIB Analysis Summary \u2014 ${name}`, 0, 6);
-
-  // Key info block
-  const kvData = [
-    ['CIB Subject Code', cibCode],
-    ['Subject Type', subj.subject_type || ''],
-    ['Name / Trade Name', name],
-    ["Father's Name", subj.father_name || ''],
-    ['NID (17-digit)', subj.nid_17 || ''],
-    ['Match Status', match.match_result || ''],
-    ['Inquiry Date', (report.inquiry || {}).inquiry_date || ''],
-    ['Source File', report.source_file || ''],
-  ];
-
-  let row = 2;
-  for (const [label, value] of kvData) {
-    setCell(ws, row, 0, label, { font: _BOLD_FONT, border: _THIN_BORDER });
-    setCell(ws, row, 1, value, { font: _NORMAL_FONT, border: _THIN_BORDER });
-    row++;
+  // Header row
+  for (let c = 0; c < headers.length; c++) {
+    setCell(ws, startRow, c, headers[c], {
+      font: _HEADER_FONT, fill: _HEADER_FILL, alignment: _CENTER, border: _THIN_BORDER,
+    });
   }
 
-  // Risk summary section
-  row++;
-  writeSection(ws, 'Risk Summary', row, 6);
-  row++;
+  // Data rows
+  for (let r = 0; r < rows.length; r++) {
+    const rowData = rows[r];
+    const altFill = r % 2 === 1 ? _ALT_FILL : null;
+    for (let c = 0; c < rowData.length; c++) {
+      const val = rowData[c] ?? '';
+      const style = { font: _NORMAL_FONT, border: _THIN_BORDER };
+      if (altFill) style.fill = altFill;
 
-  const riskData = [
-    ['Worst Classification (Borrower)', met.worst_class_borrower || 'STD'],
-    ['Worst Classification (Guarantor)', met.worst_class_guarantor || 'STD'],
-    ['Ever Overdue (Borrower)', met.ever_overdue_borrower ? 'Yes' : 'No'],
-    ['Max Overdue Amount (Borrower)', met.max_overdue_borrower || 0],
-    ['Max NPI (Borrower)', met.max_npi_borrower || 0],
-    ['Willful Default', met.has_willful_default ? 'YES' : 'No'],
-  ];
-
-  for (const [label, value] of riskData) {
-    setCell(ws, row, 0, label, { font: _BOLD_FONT, border: _THIN_BORDER });
-
-    let isAlert = false;
-    if (typeof value === 'string' && ADVERSE_CLASSIFICATIONS.includes(value)) isAlert = true;
-    if (value === 'YES') isAlert = true;
-
-    const valStyle = { font: _NORMAL_FONT, border: _THIN_BORDER };
-    if (isAlert) {
-      valStyle.fill = _ALERT_FILL;
-      valStyle.font = { name: 'Arial', bold: true, color: { rgb: '9C0006' }, sz: 10 };
-    }
-    setCell(ws, row, 1, value, valStyle);
-    row++;
-  }
-
-  // Borrower summary
-  row++;
-  writeSection(ws, 'As Borrower / Co-Borrower', row, 6);
-  row++;
-  const borrowKv = [
-    ['Reporting Institutes', sb.reporting_institutes || 0],
-    ['Living Contracts', sb.living_contracts || 0],
-    ['Total Outstanding', sb.total_outstanding || 0],
-    ['Total Overdue', sb.total_overdue || 0],
-    ['Stay Order Contracts', sb.stay_order_contracts || 0],
-  ];
-  for (const [label, value] of borrowKv) {
-    setCell(ws, row, 0, label, { font: _BOLD_FONT, border: _THIN_BORDER });
-    setCell(ws, row, 1, value);
-    styleCell(ws, row, 1, { isAmount: typeof value === 'number' && !Number.isInteger(value) });
-    row++;
-  }
-
-  // Guarantor summary
-  row++;
-  writeSection(ws, 'As Guarantor', row, 6);
-  row++;
-  const guarKv = [
-    ['Reporting Institutes', sg.reporting_institutes || 0],
-    ['Living Contracts', sg.living_contracts || 0],
-    ['Total Outstanding', sg.total_outstanding || 0],
-    ['Total Overdue', sg.total_overdue || 0],
-    ['Stay Order Contracts', sg.stay_order_contracts || 0],
-  ];
-  for (const [label, value] of guarKv) {
-    setCell(ws, row, 0, label, { font: _BOLD_FONT, border: _THIN_BORDER });
-    setCell(ws, row, 1, value);
-    styleCell(ws, row, 1, { isAmount: typeof value === 'number' && !Number.isInteger(value) });
-    row++;
-  }
-
-  // Warnings
-  const warnings = report.extraction_warnings || [];
-  if (warnings.length) {
-    row++;
-    writeSection(ws, 'Extraction Warnings', row, 6);
-    row++;
-    for (const w of warnings) {
-      setCell(ws, row, 0, w, { font: _NORMAL_FONT, fill: _AMBER_FILL });
-      row++;
-    }
-  }
-
-  autoWidth(ws);
-  XLSX.utils.book_append_sheet(wb, ws, 'Summary');
-}
-
-// ─────────────────────────── Sheet 2: Subject Info ───────────────
-
-function writeSubjectSheet(wb, report) {
-  const ws = initSheet();
-  const subj = report.subject || {};
-  const nid = report.nid_verification || {};
-  const addr = report.addresses || {};
-
-  writeTitle(ws, 'Subject Information', 0, 4);
-
-  const fields = [
-    ['CIB Subject Code', subj.cib_subject_code || ''],
-    ['Type of Subject', subj.subject_type || ''],
-    ['Name', subj.name || ''],
-    ["Father's Name", subj.father_name || ''],
-    ["Mother's Name", subj.mother_name || ''],
-    ['Spouse Name', subj.spouse_name || ''],
-    ['Date of Birth', subj.dob || ''],
-    ['Gender', subj.gender || ''],
-    ['NID (17-digit)', subj.nid_17 || ''],
-    ['NID (10-digit)', subj.nid_10 || ''],
-    ['TIN', subj.tin || ''],
-    ['Telephone', subj.telephone || ''],
-    ['District', subj.district || ''],
-    ['Trade Name', subj.trade_name || ''],
-    ['Registration No', subj.registration_no || ''],
-    ['Registration Date', subj.registration_date || ''],
-    ['Legal Form', subj.legal_form || ''],
-    ['Sector Type', subj.sector_type || ''],
-    ['Sector Code', subj.sector_code || ''],
-    ['Reference Number', subj.reference_number || ''],
-    ['', ''],
-    ['NID Verified', nid.nid_verified ? 'Yes' : 'No'],
-    ['Name from NID Server', nid.name_from_nid_server || ''],
-    ['', ''],
-    ['Present Address', addr.present || ''],
-    ['Permanent Address', addr.permanent || ''],
-    ['Office Address', addr.office || ''],
-    ['Factory Address', addr.factory || ''],
-  ];
-
-  let row = 2;
-  const verifiedFields = (subj.verified_fields || []).map(v => v.toLowerCase());
-
-  for (const [label, value] of fields) {
-    if (!label) { row++; continue; }
-    setCell(ws, row, 0, label, { font: _BOLD_FONT, border: _THIN_BORDER });
-    const valStyle = { font: _NORMAL_FONT, border: _THIN_BORDER, alignment: _LEFT_WRAP };
-    if (verifiedFields.includes(label.toLowerCase().replace(/ /g, '_'))) {
-      valStyle.fill = _GREEN_FILL;
-    }
-    setCell(ws, row, 1, value || '', valStyle);
-    row++;
-  }
-
-  autoWidth(ws);
-  XLSX.utils.book_append_sheet(wb, ws, 'Subject Info');
-}
-
-// ─────────────────────────── Sheet 3: Facility Matrix ────────────
-
-function writeFacilityMatrixSheet(wb, report) {
-  const ws = initSheet();
-  writeTitle(ws, 'Summary of Funded Facilities', 0, 8);
-
-  const sb = report.summary_borrower || {};
-  const sg = report.summary_guarantor || {};
-
-  let row = 2;
-  writeSection(ws, 'As Borrower / Co-Borrower', row, 8);
-  row++;
-
-  const headers = ['Metric', 'Value'];
-  for (let ci = 0; ci < headers.length; ci++) {
-    setCell(ws, row, ci, headers[ci]);
-  }
-  styleHeaderRow(ws, row, headers.length);
-  row++;
-
-  const borrowerRows = [
-    ['Reporting Institutes', sb.reporting_institutes || 0],
-    ['Living Contracts', sb.living_contracts || 0],
-    ['Total Outstanding (BDT)', sb.total_outstanding || 0],
-    ['Total Overdue (BDT)', sb.total_overdue || 0],
-    ['Stay Order Contracts', sb.stay_order_contracts || 0],
-    ['Stay Order Outstanding (BDT)', sb.stay_order_outstanding || 0],
-  ];
-  for (const [label, value] of borrowerRows) {
-    setCell(ws, row, 0, label, { font: _BOLD_FONT, border: _THIN_BORDER });
-    setCell(ws, row, 1, value);
-    styleCell(ws, row, 1, { isAmount: typeof value === 'number' && !Number.isInteger(value) });
-    row++;
-  }
-
-  // Guarantor section
-  row++;
-  writeSection(ws, 'As Guarantor', row, 8);
-  row++;
-
-  for (let ci = 0; ci < headers.length; ci++) {
-    setCell(ws, row, ci, headers[ci]);
-  }
-  styleHeaderRow(ws, row, headers.length);
-  row++;
-
-  const guarantorRows = [
-    ['Reporting Institutes', sg.reporting_institutes || 0],
-    ['Living Contracts', sg.living_contracts || 0],
-    ['Total Outstanding (BDT)', sg.total_outstanding || 0],
-    ['Total Overdue (BDT)', sg.total_overdue || 0],
-    ['Stay Order Contracts', sg.stay_order_contracts || 0],
-    ['Stay Order Outstanding (BDT)', sg.stay_order_outstanding || 0],
-  ];
-  for (const [label, value] of guarantorRows) {
-    setCell(ws, row, 0, label, { font: _BOLD_FONT, border: _THIN_BORDER });
-    setCell(ws, row, 1, value);
-    styleCell(ws, row, 1, { isAmount: typeof value === 'number' && !Number.isInteger(value) });
-    row++;
-  }
-
-  autoWidth(ws);
-  XLSX.utils.book_append_sheet(wb, ws, 'Facility Matrix');
-}
-
-// ─────────────────────────── Sheet 4: Non-Funded ─────────────────
-
-function writeNonFundedSheet(wb, report) {
-  const ws = initSheet();
-  writeTitle(ws, 'Summary of Non-Funded Facilities', 0, 10);
-
-  const headers = [
-    'Role', 'Type', 'Living #', 'Living Amt',
-    'Terminated #', 'Terminated Amt',
-    'Requested #', 'Requested Amt',
-    'Stay Order #', 'Stay Order Amt',
-  ];
-
-  let row = 2;
-  for (let ci = 0; ci < headers.length; ci++) {
-    setCell(ws, row, ci, headers[ci]);
-  }
-  styleHeaderRow(ws, row, headers.length);
-  row++;
-
-  const amtCols = new Set([3, 5, 7, 9]); // 0-based
-
-  for (const key of ['non_funded_borrower', 'non_funded_guarantor']) {
-    for (const nf of (report[key] || [])) {
-      const data = [
-        nf.role || '',
-        nf.facility_type || '',
-        nf.living_count || 0,
-        nf.living_amount || 0,
-        nf.terminated_count || 0,
-        nf.terminated_amount || 0,
-        nf.requested_count || 0,
-        nf.requested_amount || 0,
-        nf.stay_order_count || 0,
-        nf.stay_order_amount || 0,
-      ];
-      for (let ci = 0; ci < data.length; ci++) {
-        setCell(ws, row, ci, data[ci]);
-        styleCell(ws, row, ci, { isAmount: amtCols.has(ci) });
+      if (amountSet.has(headers[c])) {
+        style.numFmt = AMOUNT_FORMAT;
+        style.alignment = { horizontal: 'right' };
+        setCell(ws, startRow + 1 + r, c, typeof val === 'number' ? val : 0, style);
+        ws[cellRef(startRow + 1 + r, c)].t = 'n';
+      } else if (dateSet.has(headers[c])) {
+        style.alignment = { horizontal: 'center' };
+        setCell(ws, startRow + 1 + r, c, val, style);
+      } else {
+        setCell(ws, startRow + 1 + r, c, val, style);
       }
-      row++;
     }
   }
 
-  if (row === 3) {
-    setCell(ws, row, 0, 'No non-funded facilities found.', { font: _NORMAL_FONT });
-  }
-
-  autoWidth(ws);
-  XLSX.utils.book_append_sheet(wb, ws, 'Non-Funded');
+  return startRow + 1 + rows.length;
 }
 
-// ─────────────────────────── Sheet 5: Contract Details ───────────
+// ─────────────────────────── Data Collection ────────────────────
 
-function writeContractsSheet(wb, report) {
-  const ws = initSheet();
-  writeTitle(ws, 'Contract Details', 0, 16);
+/**
+ * Collect comprehensive data for one or more subjects.
+ * @param {string[]} cibCodes - array of CIB subject codes
+ * @param {Object} db - database adapter with getSubjectFull()
+ * @returns {Object} collected data across all tables
+ */
+function collectData(cibCodes, db) {
+  const subjects = [];
+  const summaries = [];
+  const clsMatrix = [];
+  const nonFunded = [];
+  const contracts = [];
+  const history = [];
+  const linked = [];
+  const owners = [];
+  const proprietorships = [];
 
-  const headers = [
-    'CIB Contract Code', 'Role', 'Phase', 'Category',
-    'Facility Type', 'Start Date', 'End Date',
-    'Sanction Limit', 'Outstanding', 'Overdue',
-    'Installment Amt', 'Total Installments', 'Remaining',
-    'Last Update', 'Classification Date', 'Lawsuit Date',
-  ];
+  for (const code of cibCodes) {
+    const full = db.getSubjectFull(code);
+    if (!full) continue;
 
-  let row = 2;
-  for (let ci = 0; ci < headers.length; ci++) {
-    setCell(ws, row, ci, headers[ci]);
-  }
-  styleHeaderRow(ws, row, headers.length);
-  row++;
+    // Subject row
+    subjects.push(full);
 
-  const amtCols = new Set([7, 8, 9, 10]); // 0-based
-
-  for (const c of (report.contracts || [])) {
-    let latestStatus = '';
-    const hist = c.monthly_history || [];
-    if (hist.length) latestStatus = hist[0].status || '';
-
-    const data = [
-      c.cib_contract_code || '',
-      c.role || '',
-      c.phase || '',
-      c.facility_category || '',
-      c.facility_type || '',
-      c.start_date || '',
-      c.end_date || '',
-      c.sanction_limit || 0,
-      hist.length ? (hist[0].outstanding || 0) : 0,
-      hist.length ? (hist[0].overdue || 0) : 0,
-      c.installment_amount || 0,
-      c.total_installments || 0,
-      c.remaining_count || 0,
-      c.last_update || '',
-      c.classification_date || '',
-      c.lawsuit_date || '',
-    ];
-
-    const isAlert = ADVERSE_CLASSIFICATIONS.includes(latestStatus);
-    const isGreen = (c.phase || '').toLowerCase() === 'living' && !isAlert;
-
-    for (let ci = 0; ci < data.length; ci++) {
-      setCell(ws, row, ci, data[ci]);
-      styleCell(ws, row, ci, {
-        isAmount: amtCols.has(ci),
-        isAlert,
-        isGreen: isGreen && ci === 2,
-      });
+    // Summary snapshots
+    for (const ss of (full.summary_snapshots || [])) {
+      summaries.push({ ...ss, cib_subject_code: code });
     }
-    row++;
-  }
 
-  if (row === 3) {
-    setCell(ws, row, 0, 'No contracts found.', { font: _NORMAL_FONT });
-  }
+    // Classification matrix
+    for (const cm of (full.classification_matrix || [])) {
+      clsMatrix.push({ ...cm, cib_subject_code: code });
+    }
 
-  autoWidth(ws);
-  XLSX.utils.book_append_sheet(wb, ws, 'Contract Details');
-}
+    // Non-funded
+    for (const nf of (full.non_funded || [])) {
+      nonFunded.push({ ...nf, cib_subject_code: code });
+    }
 
-// ─────────────────────────── Sheet 6: Monthly History ────────────
+    // Contracts, history, linked subjects
+    for (const c of (full.contracts || [])) {
+      contracts.push({ ...c, cib_subject_code: code });
 
-function writeHistorySheet(wb, report) {
-  const ws = initSheet();
-  writeTitle(ws, 'Monthly History (All Contracts)', 0, 9);
-
-  const headers = [
-    'Contract Code', 'Role', 'Facility', 'Acct Date',
-    'Outstanding', 'Overdue', 'NPI', 'Status', 'Default/WD',
-  ];
-
-  let row = 2;
-  for (let ci = 0; ci < headers.length; ci++) {
-    setCell(ws, row, ci, headers[ci]);
-  }
-  styleHeaderRow(ws, row, headers.length);
-  row++;
-
-  for (const c of (report.contracts || [])) {
-    const code = c.cib_contract_code || '';
-    const role = c.role || '';
-    const fac = c.facility_type || '';
-
-    for (const h of (c.monthly_history || [])) {
-      const status = h.status || '';
-      const isAlert = ADVERSE_CLASSIFICATIONS.includes(status);
-      const data = [
-        code, role, fac,
-        h.accounting_date || '',
-        h.outstanding || 0,
-        h.overdue || 0,
-        h.npi || '',
-        status,
-        h.default_wd || '',
-      ];
-      for (let ci = 0; ci < data.length; ci++) {
-        setCell(ws, row, ci, data[ci]);
-        styleCell(ws, row, ci, { isAmount: ci === 4 || ci === 5, isAlert });
+      for (const h of (c.monthly_history || [])) {
+        history.push({
+          ...h,
+          cib_subject_code: code,
+          cib_contract_code: c.cib_contract_code || '',
+        });
       }
-      row++;
+
+      for (const ls of (c.linked_subjects || [])) {
+        linked.push({
+          ...ls,
+          parent_subject_code: code,
+          cib_contract_code: c.cib_contract_code || '',
+        });
+      }
+    }
+
+    // Relationships (owners, directors, proprietorships)
+    for (const rel of (full.relationships || [])) {
+      const relRole = (rel.role || '').toLowerCase();
+      if (relRole.includes('proprietor') || rel.trade_name) {
+        proprietorships.push({ ...rel, parent_subject_code: code });
+      } else {
+        owners.push({ ...rel, parent_subject_code: code });
+      }
     }
   }
 
-  if (row === 3) {
-    setCell(ws, row, 0, 'No monthly history found.', { font: _NORMAL_FONT });
-  }
+  return { subjects, summaries, clsMatrix, nonFunded, contracts, history, linked, owners, proprietorships };
+}
 
+// ─────────────────────────── Sheet Builders ──────────────────────
+
+function buildSubjectsSheet(wb, data) {
+  const ws = initSheet();
+  const headers = [
+    'CIB Subject Code', 'Subject Type', 'Name', 'Trade Name', 'Father Name', 'Mother Name',
+    'Spouse Name', 'Date of Birth', 'Gender', 'NID (17)', 'NID (10)', 'TIN',
+    'District', 'Sector Type', 'Sector Code', 'Legal Form',
+    'Registration No', 'Registration Date', 'Telephone', 'NID Match Status',
+    'Name from NID', 'Present Address', 'Permanent Address', 'Office Address', 'Factory Address',
+    'Contract History Period', 'Risk Rating', 'Source File',
+  ];
+
+  const rows = data.subjects.map(s => [
+    s.cib_subject_code || '', s.subject_type || '', s.name || '', s.trade_name || '',
+    s.father_name || '', s.mother_name || '', s.spouse_name || '',
+    s.dob || '', s.gender || '', s.nid_17 || '', s.nid_10 || '', s.tin || '',
+    s.district || '', s.sector_type || '', s.sector_code || '', s.legal_form || '',
+    s.registration_no || '', s.registration_date || '', s.telephone || '',
+    s.match_status || '', s.name_from_nid || '',
+    s.present_address || '', s.permanent_address || '', s.office_address || '', s.factory_address || '',
+    s.contract_history_period || '', s.risk_rating || '', s.source_file || '',
+  ]);
+
+  writeTable(ws, headers, rows, { dateCols: ['Date of Birth', 'Registration Date'] });
+  autoWidth(ws);
+  XLSX.utils.book_append_sheet(wb, ws, 'Subjects');
+}
+
+function buildSummarySheet(wb, data) {
+  const ws = initSheet();
+  const headers = [
+    'CIB Subject Code', 'Role', 'Reporting Institutes', 'Living Contracts',
+    'Total Outstanding', 'Total Overdue', 'Stay Order Contracts',
+    'Stay Order Outstanding', 'Worst Classification', 'Ever Overdue', 'Max Overdue',
+    'Max NPI', 'Willful Default',
+  ];
+
+  const rows = data.summaries.map(s => [
+    s.cib_subject_code || '', s.role || '',
+    s.bb_reporting_institutes || 0, s.bb_living_contracts || 0,
+    s.bb_total_outstanding || 0, s.bb_total_overdue || 0,
+    s.bb_stay_order_contracts || 0, s.bb_stay_order_outstanding || 0,
+    s.bb_worst_classification || '', s.bb_ever_overdue || '',
+    s.bb_max_overdue || 0, s.bb_max_npi || 0, s.bb_willful_default || '',
+  ]);
+
+  writeTable(ws, headers, rows, {
+    amountCols: ['Total Outstanding', 'Total Overdue', 'Stay Order Outstanding', 'Max Overdue'],
+  });
+  autoWidth(ws);
+  XLSX.utils.book_append_sheet(wb, ws, 'Summary Snapshots');
+}
+
+function buildClassificationSheet(wb, data) {
+  const ws = initSheet();
+  const headers = [
+    'CIB Subject Code', 'Role', 'Facility Type', 'Classification',
+    'Contract Count', 'Outstanding Amount',
+  ];
+
+  const rows = data.clsMatrix.map(c => [
+    c.cib_subject_code || '', c.role || '', c.facility_type || '', c.classification || '',
+    c.contract_count || 0, c.outstanding_amount || 0,
+  ]);
+
+  writeTable(ws, headers, rows, { amountCols: ['Outstanding Amount'] });
+  autoWidth(ws);
+  XLSX.utils.book_append_sheet(wb, ws, 'Classification Matrix');
+}
+
+function buildNonFundedSheet(wb, data) {
+  const ws = initSheet();
+  const headers = [
+    'CIB Subject Code', 'Role', 'Facility Type',
+    'Living Count', 'Living Amount', 'Terminated Count', 'Terminated Amount',
+    'Requested Count', 'Requested Amount', 'Stay Order Count', 'Stay Order Amount',
+  ];
+
+  const rows = data.nonFunded.map(n => [
+    n.cib_subject_code || '', n.role || '', n.facility_type || '',
+    n.living_count || 0, n.living_amount || 0,
+    n.terminated_count || 0, n.terminated_amount || 0,
+    n.requested_count || 0, n.requested_amount || 0,
+    n.stay_order_count || 0, n.stay_order_amount || 0,
+  ]);
+
+  writeTable(ws, headers, rows, {
+    amountCols: ['Living Amount', 'Terminated Amount', 'Requested Amount', 'Stay Order Amount'],
+  });
+  autoWidth(ws);
+  XLSX.utils.book_append_sheet(wb, ws, 'Non-Funded Facilities');
+}
+
+function buildContractsSheet(wb, data) {
+  const ws = initSheet();
+  const headers = [
+    'CIB Subject Code', 'CIB Contract Code', 'FI Code', 'Role', 'Phase',
+    'Facility Type', 'Facility Category', 'Start Date', 'End Date', 'Last Update',
+    'Last Payment Date', 'Sanction Limit', 'Total Disbursement', 'Installment Amount',
+    'Total Installments', 'Remaining Count', 'Remaining Amount',
+    'Payment Method', 'Periodicity', 'Security Amount', 'Security Type',
+    'Third Party Guarantee', 'Reorganized Credit', 'Times Rescheduled',
+    'Classification Date', 'Rescheduling Date', 'Lawsuit Date',
+    'Worst Classification', 'Max Overdue', 'Max NPI', 'Contract Risk', 'Source File',
+  ];
+
+  const rows = data.contracts.map(c => [
+    c.cib_subject_code || '', c.cib_contract_code || '', c.fi_code || '',
+    c.role || '', c.phase || '', c.facility_type || '', c.facility_category || '',
+    c.start_date || '', c.end_date || '', c.last_update || '', c.last_payment_date || '',
+    c.sanction_limit || 0, c.total_disbursement || 0, c.installment_amount || 0,
+    c.total_installments || 0, c.remaining_count || 0, c.remaining_amount || 0,
+    c.payment_method || '', c.periodicity || '', c.security_amount || 0, c.security_type || '',
+    c.third_party_guarantee || 0, c.reorganized_credit || '', c.times_rescheduled || 0,
+    c.classification_date || '', c.rescheduling_date || '', c.lawsuit_date || '',
+    c.worst_ever_classification || '', c.max_overdue_amount || 0, c.max_npi || 0,
+    c.contract_risk || '', c.source_file || '',
+  ]);
+
+  writeTable(ws, headers, rows, {
+    amountCols: ['Sanction Limit', 'Total Disbursement', 'Installment Amount', 'Remaining Amount',
+                 'Security Amount', 'Third Party Guarantee', 'Max Overdue'],
+    dateCols: ['Start Date', 'End Date', 'Last Update', 'Last Payment Date',
+               'Classification Date', 'Rescheduling Date', 'Lawsuit Date'],
+  });
+  autoWidth(ws);
+  XLSX.utils.book_append_sheet(wb, ws, 'Contracts');
+}
+
+function buildHistorySheet(wb, data) {
+  const ws = initSheet();
+  const headers = [
+    'CIB Subject Code', 'CIB Contract Code', 'Accounting Date',
+    'Outstanding', 'Overdue', 'NPI', 'Sanction Limit', 'Status', 'Default & WD', 'Remarks WD',
+  ];
+
+  const rows = data.history.map(h => [
+    h.cib_subject_code || '', h.cib_contract_code || '', h.accounting_date || '',
+    h.outstanding || 0, h.overdue || 0, h.npi ?? '', h.sanction_limit ?? '',
+    h.status || '', h.default_wd || '', h.remarks_wd || '',
+  ]);
+
+  writeTable(ws, headers, rows, {
+    amountCols: ['Outstanding', 'Overdue', 'Sanction Limit'],
+    dateCols: ['Accounting Date'],
+  });
   autoWidth(ws);
   XLSX.utils.book_append_sheet(wb, ws, 'Monthly History');
 }
 
-// ─────────────────────────── Sheet 7: Linked Parties ─────────────
-
-function writeLinkedPartiesSheet(wb, report) {
+function buildLinkedSheet(wb, data) {
   const ws = initSheet();
-  writeTitle(ws, 'Linked Parties', 0, 5);
+  const headers = ['Parent Subject Code', 'CIB Contract Code', 'Linked CIB Code', 'Role', 'Name'];
 
-  let row = 2;
+  const rows = data.linked.map(l => [
+    l.parent_subject_code || '', l.cib_contract_code || '',
+    l.cib_subject_code || '', l.role || '', l.name || '',
+  ]);
 
-  // Owners
-  const owners = report.owners || [];
-  if (owners.length) {
-    writeSection(ws, 'Company Owners / Directors', row, 5);
-    row++;
-    const hdr = ['CIB Code', 'Name', 'Role', 'Stay Order'];
-    for (let ci = 0; ci < hdr.length; ci++) setCell(ws, row, ci, hdr[ci]);
-    styleHeaderRow(ws, row, hdr.length);
-    row++;
-    for (const ow of owners) {
-      const vals = [
-        ow.cib_subject_code || '', ow.name || '',
-        ow.role || '', ow.stay_order || '',
-      ];
-      for (let ci = 0; ci < vals.length; ci++) {
-        setCell(ws, row, ci, vals[ci], { font: _NORMAL_FONT, border: _THIN_BORDER });
-      }
-      row++;
-    }
-    row++;
-  }
-
-  // Proprietorships
-  const props = report.proprietorships || [];
-  if (props.length) {
-    writeSection(ws, 'Linked Proprietorships', row, 5);
-    row++;
-    const hdr = ['CIB Code', 'Trade Name', 'Sector Type', 'Sector Code'];
-    for (let ci = 0; ci < hdr.length; ci++) setCell(ws, row, ci, hdr[ci]);
-    styleHeaderRow(ws, row, hdr.length);
-    row++;
-    for (const pr of props) {
-      const vals = [
-        pr.cib_subject_code || '', pr.trade_name || '',
-        pr.sector_type || '', pr.sector_code || '',
-      ];
-      for (let ci = 0; ci < vals.length; ci++) {
-        setCell(ws, row, ci, vals[ci], { font: _NORMAL_FONT, border: _THIN_BORDER });
-      }
-      row++;
-    }
-    row++;
-  }
-
-  // Linked subjects from contracts
-  const allLinked = [];
-  for (const c of (report.contracts || [])) {
-    const code = c.cib_contract_code || '';
-    for (const ls of (c.linked_subjects || [])) {
-      allLinked.push([code, ls]);
-    }
-  }
-
-  if (allLinked.length) {
-    writeSection(ws, 'Subjects Linked to Contracts', row, 5);
-    row++;
-    const hdr = ['Contract Code', 'CIB Code', 'Role', 'Name'];
-    for (let ci = 0; ci < hdr.length; ci++) setCell(ws, row, ci, hdr[ci]);
-    styleHeaderRow(ws, row, hdr.length);
-    row++;
-    for (const [contractCode, ls] of allLinked) {
-      const vals = [
-        contractCode,
-        ls.cib_subject_code || '',
-        ls.role || '',
-        ls.name || '',
-      ];
-      for (let ci = 0; ci < vals.length; ci++) {
-        setCell(ws, row, ci, vals[ci], { font: _NORMAL_FONT, border: _THIN_BORDER });
-      }
-      row++;
-    }
-  }
-
-  if (row === 2) {
-    setCell(ws, row, 0, 'No linked parties found.', { font: _NORMAL_FONT });
-  }
-
+  writeTable(ws, headers, rows);
   autoWidth(ws);
-  XLSX.utils.book_append_sheet(wb, ws, 'Linked Parties');
+  XLSX.utils.book_append_sheet(wb, ws, 'Linked Subjects');
 }
 
-// ─────────────────────────── Sheet 8: Processing Info ────────────
-
-function writeProcessingSheet(wb, report) {
+function buildOwnersSheet(wb, data) {
   const ws = initSheet();
-  writeTitle(ws, 'Processing & Extraction Metadata', 0, 4);
+  const headers = ['Parent Subject Code', 'CIB Subject Code', 'Name', 'Role', 'Stay Order'];
 
-  const inq = report.inquiry || {};
-  const matchStatus = report.match_status || {};
+  const rows = data.owners.map(o => [
+    o.parent_subject_code || '', o.cib_subject_code || '',
+    o.name || '', o.role || '', o.stay_order || '',
+  ]);
 
-  const fields = [
-    ['Source File', report.source_file || ''],
-    ['Parse Timestamp', report.parse_timestamp || ''],
-    ['Parser Version', report.parser_version || ''],
-    ['', ''],
-    ['Inquiry Date', inq.inquiry_date || ''],
-    ['User ID', inq.user_id || ''],
-    ['FI Code', inq.fi_code || ''],
-    ['Branch Code', inq.branch_code || ''],
-    ['FI Name', inq.fi_name || ''],
-    ['', ''],
-    ['Match Status', matchStatus.match_result || ''],
-    ['Contract History', `${matchStatus.contract_history_months || ''} months`],
-    ['Contract Phase', matchStatus.contract_phase || ''],
+  writeTable(ws, headers, rows);
+  autoWidth(ws);
+  XLSX.utils.book_append_sheet(wb, ws, 'Owners & Directors');
+}
+
+function buildProprietorshipsSheet(wb, data) {
+  const ws = initSheet();
+  const headers = ['Parent Subject Code', 'CIB Subject Code', 'Trade Name', 'Sector Type', 'Sector Code'];
+
+  const rows = data.proprietorships.map(p => [
+    p.parent_subject_code || '', p.cib_subject_code || '',
+    p.trade_name || '', p.sector_type || '', p.sector_code || '',
+  ]);
+
+  writeTable(ws, headers, rows);
+  autoWidth(ws);
+  XLSX.utils.book_append_sheet(wb, ws, 'Proprietorships');
+}
+
+function buildDashboardSheet(wb, data) {
+  const ws = initSheet();
+
+  // Title
+  setCell(ws, 0, 0, `CIB Portfolio Dashboard \u2014 ${APP_NAME} v${APP_VERSION}`, {
+    font: _TITLE_FONT, fill: _TITLE_FILL, alignment: _CENTER,
+  });
+  ws['!merges'].push({ s: { r: 0, c: 0 }, e: { r: 0, c: 6 } });
+
+  const now = new Date();
+  setCell(ws, 1, 0, `Generated: ${now.toISOString().replace('T', ' ').substring(0, 19)}`, {
+    font: { name: 'Arial', sz: 9, italic: true, color: { rgb: '888888' } },
+  });
+
+  // Portfolio metrics
+  let row = 3;
+  setCell(ws, row, 0, 'PORTFOLIO OVERVIEW', { font: _SECTION_FONT, fill: _SECTION_FILL });
+  ws['!merges'].push({ s: { r: row, c: 0 }, e: { r: row, c: 1 } });
+  row++;
+
+  const livingContracts = data.contracts.filter(c => (c.phase || '').toLowerCase() === 'living');
+  const terminatedContracts = data.contracts.filter(c => (c.phase || '').toLowerCase() !== 'living');
+
+  const metrics = [
+    ['Total Subjects', data.subjects.length],
+    ['Total Contracts', data.contracts.length],
+    ['Living Contracts', livingContracts.length],
+    ['Terminated Contracts', terminatedContracts.length],
+    ['Total History Records', data.history.length],
+    ['Total Linked Parties', data.linked.length],
   ];
-
-  let row = 2;
-  for (const [label, value] of fields) {
-    if (!label) { row++; continue; }
-    setCell(ws, row, 0, label, { font: _BOLD_FONT, border: _THIN_BORDER });
-    setCell(ws, row, 1, String(value), { font: _NORMAL_FONT, border: _THIN_BORDER });
+  for (const [label, val] of metrics) {
+    setCell(ws, row, 0, label, { font: _NORMAL_FONT, border: _THIN_BORDER });
+    setCell(ws, row, 1, val, { font: _BOLD_FONT, border: _THIN_BORDER });
+    ws[cellRef(row, 1)].t = 'n';
+    ws[cellRef(row, 1)].s.numFmt = '#,##0';
     row++;
   }
 
-  // Warnings
-  const warnings = report.extraction_warnings || [];
+  // Subject breakdown
   row++;
-  writeSection(ws, `Extraction Warnings (${warnings.length})`, row, 4);
+  setCell(ws, row, 0, 'SUBJECT BREAKDOWN', { font: _SECTION_FONT, fill: _SECTION_FILL });
+  ws['!merges'].push({ s: { r: row, c: 0 }, e: { r: row, c: 6 } });
   row++;
-  if (warnings.length) {
-    for (const w of warnings) {
-      setCell(ws, row, 0, w, { font: _NORMAL_FONT, fill: _AMBER_FILL });
-      row++;
-    }
-  } else {
-    setCell(ws, row, 0, 'No warnings \u2014 clean extraction.', {
-      font: _NORMAL_FONT,
-      fill: _GREEN_FILL,
+
+  const breakdownHeaders = ['Subject', 'Type', 'Risk', 'Living (B)', 'Living (G)', 'Total Outstanding', 'Contracts'];
+  for (let c = 0; c < breakdownHeaders.length; c++) {
+    setCell(ws, row, c, breakdownHeaders[c], {
+      font: _HEADER_FONT, fill: _HEADER_FILL, alignment: _CENTER, border: _THIN_BORDER,
     });
   }
+  row++;
 
-  autoWidth(ws);
-  XLSX.utils.book_append_sheet(wb, ws, 'Processing Info');
+  for (const s of data.subjects) {
+    const code = s.cib_subject_code;
+    const subjContracts = data.contracts.filter(c => c.cib_subject_code === code);
+    const livingB = subjContracts.filter(c => (c.phase || '').toLowerCase() === 'living' && (c.role || '').toLowerCase().includes('orrower')).length;
+    const livingG = subjContracts.filter(c => (c.phase || '').toLowerCase() === 'living' && (c.role || '').toLowerCase().includes('uarantor')).length;
+    const totalOut = data.summaries
+      .filter(ss => ss.cib_subject_code === code)
+      .reduce((sum, ss) => sum + (ss.bb_total_outstanding || 0), 0);
+
+    const vals = [
+      s.name || s.trade_name || '', s.subject_type || '', s.risk_rating || '',
+      livingB, livingG, totalOut, subjContracts.length,
+    ];
+    for (let c = 0; c < vals.length; c++) {
+      const style = { font: _NORMAL_FONT, border: _THIN_BORDER };
+      if (c === 5) { style.numFmt = AMOUNT_FORMAT; style.alignment = { horizontal: 'right' }; }
+      setCell(ws, row, c, vals[c], style);
+      if (typeof vals[c] === 'number') ws[cellRef(row, c)].t = 'n';
+    }
+    row++;
+  }
+
+  // Set column widths
+  ws['!cols'] = [
+    { wch: 35 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 20 }, { wch: 12 },
+  ];
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Dashboard Summary');
 }
 
-// ─────────────────────────── Single Report Export ────────────────
+// ─────────────────────────── Build Workbook ──────────────────────
+
+function buildWorkbook(data) {
+  const wb = XLSX.utils.book_new();
+  buildSubjectsSheet(wb, data);
+  buildSummarySheet(wb, data);
+  buildClassificationSheet(wb, data);
+  buildNonFundedSheet(wb, data);
+  buildContractsSheet(wb, data);
+  buildHistorySheet(wb, data);
+  buildLinkedSheet(wb, data);
+  buildOwnersSheet(wb, data);
+  buildProprietorshipsSheet(wb, data);
+  buildDashboardSheet(wb, data);
+  return wb;
+}
+
+// ─────────────────────────── Public API ──────────────────────────
 
 /**
- * Export one parsed CIB report to an 8-sheet Excel workbook.
- *
- * @param {Object} report - dict returned by parser (or reconstructed from DB)
- * @returns {Uint8Array} The xlsx binary data
+ * Export all subjects into a comprehensive 10-sheet Excel workbook.
+ * Triggers a browser download.
  */
-export function exportSingleReport(report) {
-  const wb = XLSX.utils.book_new();
+export function exportMasterExcel(allSubjects, db, filename) {
+  const cibCodes = allSubjects.map(s => s.cib_subject_code);
+  const data = collectData(cibCodes, db);
+  const wb = buildWorkbook(data);
+  const xlsxData = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const fname = filename || `CIB_Master_Export_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  downloadBlob(xlsxData, fname, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  return xlsxData;
+}
 
-  writeSummarySheet(wb, report);
-  writeSubjectSheet(wb, report);
-  writeFacilityMatrixSheet(wb, report);
-  writeNonFundedSheet(wb, report);
-  writeContractsSheet(wb, report);
-  writeHistorySheet(wb, report);
-  writeLinkedPartiesSheet(wb, report);
-  writeProcessingSheet(wb, report);
-
+/**
+ * Export a single subject into the same 10-sheet Excel format.
+ * Called from individual-report.js.
+ */
+export function exportSingleReport(subjectData, db) {
+  const code = subjectData.cib_subject_code;
+  const data = collectData([code], db);
+  const wb = buildWorkbook(data);
   return XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
 }
 
-// ─────────────────────────── Batch Export (from DB) ──────────────
-
-/**
- * Export multiple subjects from the database into a single Excel workbook.
- * Triggers a browser download.
- *
- * @param {Array} allSubjects - array of subject summary objects from db
- * @param {Object} db - database adapter with get_subject_full(), get_all_subjects()
- * @param {string} [filename] - optional filename override
- */
-export function exportMasterExcel(allSubjects, db, filename) {
-  const wb = XLSX.utils.book_new();
-  const ws = initSheet();
-
-  writeTitle(ws, `CIB Master Export \u2014 ${APP_NAME} v${APP_VERSION}`, 0, 20);
-
-  const headers = [
-    'CIB Code', 'Type', 'Name', 'Trade Name', 'Father', 'NID-17',
-    'Match Status', 'Inquiry Date',
-    'B.Institutes', 'B.Living', 'B.Outstanding', 'B.Overdue',
-    'G.Institutes', 'G.Living', 'G.Outstanding', 'G.Overdue',
-    'Worst CL (B)', 'Worst CL (G)', 'Willful Default',
-    'Source File',
-  ];
-
-  let row = 2;
-  for (let ci = 0; ci < headers.length; ci++) {
-    setCell(ws, row, ci, headers[ci]);
-  }
-  styleHeaderRow(ws, row, headers.length);
-  row++;
-
-  const amtCols = new Set([10, 11, 14, 15]); // 0-based
-
-  for (const s of allSubjects) {
-    const data = [
-      s.cib_subject_code || '',
-      s.subject_type || '',
-      s.name || '',
-      s.trade_name || '',
-      s.father_name || '',
-      s.nid_17 || '',
-      s.match_status || '',
-      s.inquiry_date || '',
-      s.b_reporting_institutes || 0,
-      s.b_living_contracts || 0,
-      s.b_total_outstanding || 0,
-      s.b_total_overdue || 0,
-      s.g_reporting_institutes || 0,
-      s.g_living_contracts || 0,
-      s.g_total_outstanding || 0,
-      s.g_total_overdue || 0,
-      s.worst_class_borrower || 'STD',
-      s.worst_class_guarantor || 'STD',
-      s.has_willful_default ? 'Yes' : 'No',
-      s.source_file || '',
-    ];
-
-    for (let ci = 0; ci < data.length; ci++) {
-      setCell(ws, row, ci, data[ci]);
-      const isAlert =
-        (ci === 16 && ADVERSE_CLASSIFICATIONS.includes(data[ci])) ||
-        (ci === 17 && ADVERSE_CLASSIFICATIONS.includes(data[ci])) ||
-        (ci === 18 && data[ci] === 'Yes');
-      styleCell(ws, row, ci, { isAmount: amtCols.has(ci), isAlert });
-    }
-    row++;
-  }
-
-  autoWidth(ws);
-
-  // Timestamp footer
-  row++;
-  const now = new Date();
-  const ts = now.toISOString().replace('T', ' ').substring(0, 19);
-  setCell(ws, row, 0, `Generated: ${ts} | ${APP_NAME} v${APP_VERSION}`, {
-    font: { name: 'Arial', italic: true, sz: 8, color: { rgb: '888888' } },
-  });
-
-  XLSX.utils.book_append_sheet(wb, ws, 'Master Export');
-
-  const data = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-  const fname = filename || `CIB_Master_Export_${now.toISOString().slice(0, 10)}.xlsx`;
-  downloadBlob(data, fname, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-
-  return data;
-}
-
-export { downloadBlob };
+export { downloadBlob, collectData, buildWorkbook };
