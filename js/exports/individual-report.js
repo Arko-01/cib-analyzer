@@ -38,7 +38,7 @@ function dbSubjectToReport(data) {
     },
 
     match_status: {
-      match_status: data.match_status || '',
+      match_result: data.match_status || '',
       contract_history_months: data.contract_history_months || '',
       contract_phase: data.contract_phase || '',
     },

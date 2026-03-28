@@ -105,7 +105,7 @@ function buildSingleReportCSVs(report) {
     present_address: addr.present || '',
     permanent_address: addr.permanent || '',
     office_address: addr.office || '',
-    match_status: match.match_status || '',
+    match_status: match.match_result || '',
     inquiry_date: inq.inquiry_date || '',
     fi_name: inq.fi_name || '',
     worst_class_borrower: met.worst_class_borrower || 'STD',

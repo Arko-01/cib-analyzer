@@ -200,7 +200,7 @@ function findSectionBoundaries(lines) {
             sections.subject_info = i;
         } else if (line === 'ADDRESS' && sections.address_first === -1) {
             sections.address_first = i;
-        } else if (line.includes('OWNERS LIST') && sections.owners_list === -1) {
+        } else if ((line.includes('OWNERS LIST') || line.includes('LIST OF OWNERS')) && sections.owners_list === -1) {
             sections.owners_list = i;
         } else if ((line.includes('LINKED PROPRIETORSHIP') || line.includes('PROPRIETORSHIP CONCERN')) && sections.proprietorship === -1) {
             sections.proprietorship = i;
@@ -338,7 +338,7 @@ function parseInquiryHeader(lines, sections) {
  */
 function parseMatchStatus(lines, sections) {
     const data = {
-        match_status: 'Unknown',
+        match_result: 'Unknown',
         contract_history_months: null,
         contract_phase: ''
     };
@@ -350,9 +350,9 @@ function parseMatchStatus(lines, sections) {
         const line = lines[i];
 
         if (line.includes('No Matched found')) {
-            data.match_status = 'No Match';
+            data.match_result = 'No Match';
         } else if (line.includes('Matched found') && !line.includes('No Matched')) {
-            data.match_status = 'Matched';
+            data.match_result = 'Matched';
         }
 
         // Contract History period: "Contract History:24 month" or "Contract History : 24 month"
@@ -398,7 +398,9 @@ function parseMatchStatus(lines, sections) {
 function parseNidVerification(lines, sections) {
     const data = {
         nid_verified: false,
-        name_from_nid_server: ''
+        name_from_nid_server: '',
+        nid_number: '',
+        nid_match_result: ''
     };
 
     const start = sections.nid_verification ?? -1;
@@ -407,6 +409,9 @@ function parseNidVerification(lines, sections) {
     }
 
     const end = sections.subject_info ?? lines.length;
+
+    let nid17 = '';
+    let nid10 = '';
 
     for (let i = start; i < Math.min(end, lines.length); i++) {
         const line = lines[i];
@@ -425,7 +430,33 @@ function parseNidVerification(lines, sections) {
                 data.name_from_nid_server = val;
             }
         }
+
+        // NID (17 Digit) No: 19932613894000327
+        if (line.includes('NID (17 Digit) No:') || line.includes('NID (17 Digit)No:')) {
+            const m = line.match(/(\d{17})/);
+            if (m) {
+                nid17 = m[1];
+            }
+        }
+
+        // NID (10 Digit) No: 2398910022
+        if (line.includes('NID (10 Digit) No:') || line.includes('NID (10 Digit)No:')) {
+            const m = line.match(/(\d{10,})/);
+            if (m) {
+                nid10 = m[1];
+            }
+        }
+
+        // Match result from NID verification section
+        if (line.includes('Matched found') && !line.includes('No Matched')) {
+            data.nid_match_result = 'Matched';
+        } else if (line.includes('No Matched found')) {
+            data.nid_match_result = 'No Match';
+        }
     }
+
+    // Store the best NID number: prefer 17-digit, fall back to 10-digit
+    data.nid_number = nid17 || nid10;
 
     return data;
 }
@@ -568,7 +599,7 @@ function parseSubjectInfo(lines, sections) {
             }
             // Strip trailing fields that share the same line
             val = stripTrailingField(val, ['Sector type', 'Sector code', 'Legal form', 'Registration']);
-            data.father_name = val;
+            data.fathers_name = val;
         }
 
         // Mother's name
@@ -578,7 +609,7 @@ function parseSubjectInfo(lines, sections) {
                 val = getValueAfter(sectionLines, i);
             }
             val = stripTrailingField(val, ['Sector code', 'Sector type', 'above']);
-            data.mother_name = val;
+            data.mothers_name = val;
         }
 
         // Spouse Name
@@ -889,7 +920,7 @@ function parseAddresses(lines, sections) {
                 }
 
                 // Check if we've hit a new section
-                const sectionStarts = ['LINKED PROPRIETORSHIP', 'OWNERS LIST', '1. SUMMARY', 'SUBJECT INFORMATION', 'PROPRIETORSHIP CONCERN', 'CIB subject code:'];
+                const sectionStarts = ['LINKED PROPRIETORSHIP', 'OWNERS LIST', 'LIST OF OWNERS', '1. SUMMARY', 'SUBJECT INFORMATION', 'PROPRIETORSHIP CONCERN', 'CIB subject code:'];
                 if (sectionStarts.some(x => line.startsWith(x))) {
                     break;
                 }
@@ -999,17 +1030,46 @@ function parseOwnersList(lines, sections) {
         return owners;
     }
 
-    // Skip header lines ("CIB subject code", "Name of the Owner/Company", etc.)
+    // Known owner roles (ordered longest-first so longer patterns match before shorter ones)
+    const KNOWN_ROLES = [
+        'Nominated director (by Pvt. Institution)',
+        'Nominated director (by Govt.)',
+        'Nominated director',
+        'Sponsor director',
+        'Managing director',
+        'Elected director',
+        'Chairman',
+        'Director',
+        'Partner',
+        'Proprietor',
+        'CEO',
+        'Secretary',
+        'Trustee',
+        'Member',
+    ];
+
+    // Skip header lines until we pass "Stay Order" or similar headers
     let i = start + 1;
-    while (i < lines.length && !lines[i].includes('Stay Order')) {
+    while (i < lines.length) {
+        const line = lines[i];
+        if (line.includes('Stay Order') || line.includes('Stay order')) {
+            i++;
+            break;
+        }
+        // Also break if we've gone too far past headers
+        if (RE_CIB_CODE.test(line.split(/\s+/)[0])) {
+            break;
+        }
         i++;
     }
-    i++; // Skip the "Stay Order" header line
+
+    // Track seen entries for deduplication
+    const seen = new Set();
 
     // Read until we hit the Summary section
     while (i < lines.length) {
         const line = lines[i];
-        if (line.startsWith('1. SUMMARY') || line.startsWith('1.(A)')) {
+        if (line.startsWith('1. SUMMARY') || line.startsWith('1.(A)') || line.startsWith('ADDRESS')) {
             break;
         }
         if (!line) {
@@ -1017,24 +1077,64 @@ function parseOwnersList(lines, sections) {
             continue;
         }
 
-        // CIB codes follow the pattern: one letter + 9+ digits
-        if (RE_CIB_CODE.test(line)) {
-            const code = line;
-            const name = (i + 1 < lines.length) ? lines[i + 1] : '';
-            const role = (i + 2 < lines.length) ? lines[i + 2] : '';
+        // Try inline format: CIB_CODE NAME ROLE [FI_CODE DATE STATUS]
+        // e.g., "L0000855595 AHMED MUHIB ISHTIAQ Sponsor director ### ###"
+        const firstToken = line.split(/\s+/)[0];
+        if (RE_CIB_CODE.test(firstToken)) {
+            const afterCode = line.substring(firstToken.length).trim();
 
-            if (name && role) {
-                owners.push({
-                    cib_subject_code: code,
-                    name: name,
-                    role: role,
-                    stay_order: '' // Stay order column is usually empty
-                });
+            // Try to find a known role in the remaining text
+            let matchedRole = '';
+            let ownerName = '';
+            let roleIdx = -1;
+
+            for (const role of KNOWN_ROLES) {
+                const rIdx = afterCode.indexOf(role);
+                if (rIdx > 0) {
+                    matchedRole = role;
+                    ownerName = afterCode.substring(0, rIdx).trim();
+                    roleIdx = rIdx;
+                    break;
+                }
             }
-            i += 3;
-        } else {
-            i++;
+
+            if (matchedRole && ownerName) {
+                // Deduplicate by (code + name + role)
+                const key = `${firstToken}|${ownerName}|${matchedRole}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    owners.push({
+                        cib_subject_code: firstToken,
+                        name: ownerName,
+                        role: matchedRole,
+                        stay_order: ''
+                    });
+                }
+                i++;
+                continue;
+            }
+
+            // Fallback: old multi-line format (code on one line, name on next, role on next)
+            const nameLine = (i + 1 < lines.length) ? lines[i + 1] : '';
+            const roleLine = (i + 2 < lines.length) ? lines[i + 2] : '';
+
+            if (nameLine && roleLine && !RE_CIB_CODE.test(nameLine.split(/\s+/)[0])) {
+                const key = `${firstToken}|${nameLine}|${roleLine}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    owners.push({
+                        cib_subject_code: firstToken,
+                        name: nameLine,
+                        role: roleLine,
+                        stay_order: ''
+                    });
+                }
+                i += 3;
+                continue;
+            }
         }
+
+        i++;
     }
 
     return owners;
@@ -1160,41 +1260,49 @@ function parseSummaryStats(lines, sections, role) {
 
     let m;
 
-    m = block.match(/No of reporting Institutes:\s*\n?(\d+)/);
+    m = block.match(/No of reporting Institutes:\s*(\d+)/);
     if (m) {
         data.reporting_institutes = parseInt(m[1], 10);
     }
 
-    m = block.match(/Total Overdue Amount:\s*\n?([\d,]+)/);
+    m = block.match(/Total Overdue Amount:\s*([\d,]+)/);
     if (m) {
         data.total_overdue = parseFloat(m[1].replace(/,/g, ''));
     }
 
-    m = block.match(/No of Living Contracts:\s*\n?(\d+)/);
+    m = block.match(/No of Living Contracts:\s*(\d+)/);
     if (m) {
         data.living_contracts = parseInt(m[1], 10);
     }
 
-    m = block.match(/No of Stay order contracts:\s*\n?(\d+)/);
+    m = block.match(/No of Stay order contracts:\s*(\d+)/);
     if (m) {
         data.stay_order_contracts = parseInt(m[1], 10);
     }
 
-    m = block.match(/Total Outstanding Amount:\s*\n?([\d,]+)/);
+    m = block.match(/Total Outstanding Amount:\s*([\d,]+)/);
     if (m) {
         data.total_outstanding = parseFloat(m[1].replace(/,/g, ''));
     }
 
-    // Stay order outstanding — may span multiple lines
+    // Stay order outstanding — may be on same line or next line
     for (let i2 = start; i2 < Math.min(end, lines.length); i2++) {
         if (lines[i2].includes('Total Outstanding amount for Stay Order')) {
-            for (let j2 = i2; j2 < Math.min(i2 + 5, lines.length); j2++) {
+            // Try inline first: "Total Outstanding amount for Stay Order 0"
+            const inlineMatch = lines[i2].match(/Total Outstanding amount for Stay Order\s*([\d,]+)/);
+            if (inlineMatch) {
+                data.stay_order_outstanding = parseFloat(inlineMatch[1].replace(/,/g, ''));
+                break;
+            }
+            // Fallback: value on next line
+            for (let j2 = i2 + 1; j2 < Math.min(i2 + 5, lines.length); j2++) {
                 const m2 = lines[j2].match(/^\s*([\d,]+)\s*$/);
                 if (m2) {
                     data.stay_order_outstanding = parseFloat(m2[1].replace(/,/g, ''));
                     break;
                 }
             }
+            break;
         }
     }
 
@@ -1661,7 +1769,7 @@ function parseSingleContract(blockLines, isInstallment) {
                 val = getValueAfter(blockLines, i);
             }
             // Strip trailing inline fields
-            val = stripTrailingField(val, ['Date of last', 'Date of classification', 'Accounting', 'Monthly']);
+            val = stripTrailingField(val, ['Date of last', 'Date of classification', 'Date Default', 'Date Willful', 'Willful Default', 'Accounting', 'Monthly']);
             // May span multiple lines (e.g., "Hire-Purchase under" + "shirkatul Meelk")
             if (val) {
                 let j = i + 1;
@@ -1874,6 +1982,21 @@ function parseSingleContract(blockLines, isInstallment) {
     // --- Linked Subjects ---
     contract.linked_subjects = parseLinkedSubjects(blockLines);
 
+    // --- Post-processing: normalize phase ---
+    if (contract.phase) {
+        // "Terminated in" without "advance" is incomplete parsing — normalize to "Terminated"
+        if (contract.phase === 'Terminated in') {
+            contract.phase = 'Terminated';
+        }
+        // Strip any trailing metadata that leaked into phase (e.g., "Living Date of Last Update: ...")
+        contract.phase = stripTrailingField(contract.phase, ['Date of Last', 'Date of Law', 'Monthly History']);
+    }
+
+    // --- Post-processing: set outstanding from most recent history entry ---
+    if (contract.monthly_history.length > 0) {
+        contract.outstanding = contract.monthly_history[0].outstanding;
+    }
+
     return contract;
 }
 
@@ -1917,11 +2040,15 @@ function parseMonthlyHistory(blockLines, isInstallment) {
     // Regex for orphan timestamps (e.g., "11:42:36 PM" on a line by itself)
     const RE_TIME_ONLY = /^\d{1,2}:\d{2}(:\d{2})?\s*[AP]M$/i;
 
-    // Regex for inline monthly history row:
-    // date amount amount amount/npi status default_wd
+    // Regex for inline monthly history row (3 numbers - installment format):
+    // date outstanding overdue npi status default_wd
     // e.g., "31/08/2024 4,014,223 0 0 STD No"
-    // e.g., "31/08/2024 5,000,000 4,014,223 0 STD No" (non-installment with sanction_limit)
     const RE_INLINE_ROW = /(\d{2}\/\d{2}\/\d{4})\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+(STD|SMA|SS|DF|BL|BLW)\s+(No|Yes|WD)/;
+
+    // Regex for inline monthly history row (4 numbers - non-installment format with SancLmt):
+    // date sanction_limit outstanding overdue npi/extra status default_wd
+    // e.g., "30/09/2025 300,000 0 0 0 STD No"
+    const RE_INLINE_ROW_4 = /(\d{2}\/\d{2}\/\d{4})\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+(STD|SMA|SS|DF|BL|BLW)\s+(No|Yes|WD)/;
 
     // First pass: try to extract inline rows (common in real CIB PDFs where
     // contract metadata and monthly history are in two-column layout)
@@ -1933,6 +2060,52 @@ function parseMonthlyHistory(blockLines, isInstallment) {
             break;
         }
 
+        // Try 4-number format first (non-installment with SancLmt column)
+        const inlineMatch4 = RE_INLINE_ROW_4.exec(line);
+        if (inlineMatch4) {
+            try {
+                const date = inlineMatch4[1];
+                const v1 = parseFloat(inlineMatch4[2].replace(/,/g, ''));
+                const v2 = parseFloat(inlineMatch4[3].replace(/,/g, ''));
+                const v3 = parseFloat(inlineMatch4[4].replace(/,/g, ''));
+                const v4 = parseFloat(inlineMatch4[5].replace(/,/g, ''));
+                const status = inlineMatch4[6];
+                const defaultWd = inlineMatch4[7];
+
+                if (isNonInst) {
+                    // 4 numbers for non-installment: sancLmt, outstanding, overdue, npi(extra)
+                    history.push({
+                        date: date,
+                        accounting_date: date,
+                        sanction_limit: v1,
+                        outstanding: v2,
+                        overdue: v3,
+                        npi: null,
+                        status: status,
+                        default_wd: defaultWd,
+                        remarks_wd: ''
+                    });
+                } else {
+                    // 4 numbers for installment: outstanding, overdue, npi, extra(ignore)
+                    history.push({
+                        date: date,
+                        accounting_date: date,
+                        outstanding: v1,
+                        overdue: v2,
+                        npi: Math.floor(v3),
+                        sanction_limit: null,
+                        status: status,
+                        default_wd: defaultWd,
+                        remarks_wd: ''
+                    });
+                }
+            } catch (e) {
+                // skip malformed row
+            }
+            continue;
+        }
+
+        // Try 3-number format (standard)
         const inlineMatch = RE_INLINE_ROW.exec(line);
         if (inlineMatch) {
             try {
@@ -1945,6 +2118,7 @@ function parseMonthlyHistory(blockLines, isInstallment) {
 
                 if (isNonInst) {
                     history.push({
+                        date: date,
                         accounting_date: date,
                         sanction_limit: v1,
                         outstanding: v2,
@@ -1956,6 +2130,7 @@ function parseMonthlyHistory(blockLines, isInstallment) {
                     });
                 } else {
                     history.push({
+                        date: date,
                         accounting_date: date,
                         outstanding: v1,
                         overdue: v2,
@@ -2034,6 +2209,7 @@ function parseMonthlyHistory(blockLines, isInstallment) {
             try {
                 if (isNonInst) {
                     history.push({
+                        date: values[idx],
                         accounting_date: values[idx],
                         sanction_limit: parseFloat(values[idx + 1].replace(/,/g, '')),
                         outstanding: parseFloat(values[idx + 2].replace(/,/g, '')),
@@ -2045,6 +2221,7 @@ function parseMonthlyHistory(blockLines, isInstallment) {
                     });
                 } else {
                     history.push({
+                        date: values[idx],
                         accounting_date: values[idx],
                         outstanding: parseFloat(values[idx + 1].replace(/,/g, '')),
                         overdue: parseFloat(values[idx + 2].replace(/,/g, '')),
@@ -2108,7 +2285,8 @@ function parseLinkedSubjects(blockLines) {
     // Valid roles for linked subjects
     const validRoles = new Set(['Borrower', 'Guarantor', 'Co-Borrower']);
 
-    // Read triples: code, role, name
+    // Read entries — handle both multi-line and inline formats
+    // Inline format: "A0001781479 Borrower FARUQUE ENTERPRISE 11:47:26 AM"
     while (i < blockLines.length) {
         const line = blockLines[i];
         if (!line) {
@@ -2116,27 +2294,87 @@ function parseLinkedSubjects(blockLines) {
             continue;
         }
 
-        // CIB code pattern: one letter + 9+ digits
-        if (RE_CIB_CODE.test(line)) {
-            const code = line;
-            const role = (i + 1 < blockLines.length) ? blockLines[i + 1] : '';
-            const name = (i + 2 < blockLines.length) ? blockLines[i + 2] : '';
+        // Skip lines that are interleaved history data (dates, amounts, timestamps)
+        if (RE_DATE.test(line.split(/\s+/)[0]) || RE_AMOUNT.test(line.trim()) ||
+            RE_STATUS.test(line.trim()) || RE_DEFAULT_WD.test(line.trim())) {
+            i++;
+            continue;
+        }
 
-            if (validRoles.has(role) && name) {
-                subjects.push({
-                    cib_subject_code: code,
-                    role: role,
-                    name: name
-                });
-                i += 3;
-            } else {
-                i++;
+        // Stop at section boundaries
+        if (line.startsWith('Accounting') || line.startsWith('Ref')) {
+            break;
+        }
+
+        // Try inline format: "CIB_CODE ROLE NAME [extra]"
+        const firstToken = line.split(/\s+/)[0];
+        if (RE_CIB_CODE.test(firstToken)) {
+            const afterCode = line.substring(firstToken.length).trim();
+
+            // Check if role is inline on same line
+            let matched = false;
+            for (const role of validRoles) {
+                if (afterCode.startsWith(role + ' ') || afterCode === role) {
+                    const name = afterCode.substring(role.length).trim()
+                        // Strip trailing timestamps like "11:47:26 AM"
+                        .replace(/\s+\d{1,2}:\d{2}(:\d{2})?\s*[AP]M\s*$/i, '')
+                        .trim();
+                    if (name) {
+                        subjects.push({
+                            cib_subject_code: firstToken,
+                            role: role,
+                            name: name
+                        });
+                    }
+                    matched = true;
+                    i++;
+                    break;
+                }
             }
-        } else {
-            // Hit non-CIB-code line — check if we should stop
-            if (line.startsWith('Accounting') || line.startsWith('Ref') || RE_DATE.test(line)) {
+            if (matched) continue;
+
+            // Fallback: multi-line format (code on one line, role next, name next)
+            // But skip interleaved history lines to find role
+            let nextIdx = i + 1;
+            while (nextIdx < blockLines.length) {
+                const nextLine = blockLines[nextIdx].trim();
+                if (RE_DATE.test(nextLine.split(/\s+/)[0]) || RE_AMOUNT.test(nextLine) ||
+                    RE_STATUS.test(nextLine) || RE_DEFAULT_WD.test(nextLine) || !nextLine) {
+                    nextIdx++;
+                    continue;
+                }
                 break;
             }
+
+            if (nextIdx < blockLines.length && validRoles.has(blockLines[nextIdx].trim())) {
+                const role = blockLines[nextIdx].trim();
+                // Find name line (skip interleaved)
+                let nameIdx = nextIdx + 1;
+                while (nameIdx < blockLines.length) {
+                    const nl = blockLines[nameIdx].trim();
+                    if (RE_DATE.test(nl.split(/\s+/)[0]) || RE_AMOUNT.test(nl) ||
+                        RE_STATUS.test(nl) || RE_DEFAULT_WD.test(nl) || !nl) {
+                        nameIdx++;
+                        continue;
+                    }
+                    break;
+                }
+                if (nameIdx < blockLines.length) {
+                    const name = blockLines[nameIdx].trim();
+                    if (name && !RE_CIB_CODE.test(name)) {
+                        subjects.push({
+                            cib_subject_code: firstToken,
+                            role: role,
+                            name: name
+                        });
+                        i = nameIdx + 1;
+                        continue;
+                    }
+                }
+            }
+
+            i++;
+        } else {
             i++;
         }
     }

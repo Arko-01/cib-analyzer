@@ -173,7 +173,7 @@ function writeSummarySheet(wb, report) {
     ['Name / Trade Name', name],
     ["Father's Name", subj.father_name || ''],
     ['NID (17-digit)', subj.nid_17 || ''],
-    ['Match Status', match.match_status || ''],
+    ['Match Status', match.match_result || ''],
     ['Inquiry Date', (report.inquiry || {}).inquiry_date || ''],
     ['Source File', report.source_file || ''],
   ];
@@ -673,7 +673,7 @@ function writeProcessingSheet(wb, report) {
     ['Branch Code', inq.branch_code || ''],
     ['FI Name', inq.fi_name || ''],
     ['', ''],
-    ['Match Status', matchStatus.match_status || ''],
+    ['Match Status', matchStatus.match_result || ''],
     ['Contract History', `${matchStatus.contract_history_months || ''} months`],
     ['Contract Phase', matchStatus.contract_phase || ''],
   ];
