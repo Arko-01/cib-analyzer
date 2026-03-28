@@ -466,7 +466,7 @@ class CIBDatabase {
         // ── Insert contracts + monthly history + linked subjects ──
         const contracts = report.contracts || [];
         for (const c of contracts) {
-            const contractCode = c.cib_contract_code || 'UNKNOWN';
+            const contractCode = c.cib_contract_code || '###';
             this.db.run(`
                 INSERT INTO contracts (
                     cib_contract_code, cib_subject_code, inquiry_id,

@@ -1565,8 +1565,8 @@ function parseSingleContract(blockLines, isInstallment) {
             contract.cib_contract_code = codeLine;
             break;
         }
-        // Handle masked contract codes from other banks (appear as "###")
-        if (codeLine === '###') {
+        // Handle masked contract codes from other banks (appear as "###", "# # #", etc.)
+        if (/^[#\s]+$/.test(codeLine) && codeLine.includes('#')) {
             contract.cib_contract_code = '###';
             break;
         }
